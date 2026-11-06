@@ -256,7 +256,9 @@ function aiCall(type, payload = {}, transfer = []) {
   });
 }
 
-async function loadAi() {
+// A load can fail when the service worker updates mid-download (first open after
+// a new version), so retry twice with a fresh worker before giving up.
+async function loadAi(attempt = 0) {
   if (ai.state === 'loading' || ai.state === 'ready') return;
   ai.state = 'loading';
   try {
@@ -264,7 +266,9 @@ async function loadAi() {
     ai.state = 'ready';
   } catch (err) {
     console.warn('AI framing unavailable', err);
-    ai.state = 'failed';
+    aiFail(err);
+    if (ai.worker) { ai.worker.terminate(); ai.worker = null; }
+    if (attempt < 2) setTimeout(() => { ai.state = 'idle'; loadAi(attempt + 1); }, attempt ? 10000 : 3000);
   }
 }
 
