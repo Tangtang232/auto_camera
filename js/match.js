@@ -4,6 +4,7 @@
 
 import { clamp, mid, visible, personGeometry } from './geom.js';
 import { finish, levelRule } from './guide.js';
+import { lightRules } from './light.js';
 
 const LIMBS = [
   { id: 'torso', a: 'sh', b: 'hip', part: '上身', w: 1.2 },
@@ -59,7 +60,7 @@ export function prepareReference(lm, aspect) {
   return { lm, geo: personGeometry(lm, aspect), limbs };
 }
 
-export function compareToReference(ref, lm, aspect, selfie, tilt) {
+export function compareToReference(ref, lm, aspect, selfie, tilt, light = null) {
   const hints = [];
   if (!lm) {
     hints.push({ id: 'm-none', level: 'bad', order: 0, text: selfie ? '人站进画面里' : '让TA站进画面', why: '还没找到人' });
@@ -131,6 +132,7 @@ export function compareToReference(ref, lm, aspect, selfie, tilt) {
       text: selfie ? action : `让TA${action}`, why: '照着虚线摆姿势', voice: action,
     });
   }
+  lightRules(light, selfie, hints);
   levelRule(tilt, 'person', hints);
 
   const res = finish('person', g, hints, { similarity, limbScores, pose });

@@ -26,7 +26,9 @@ function run(mode, work) {
   }));
 }
 
-const plain = ({ id, blob, ts, w, h, saved }) => ({ id, blob, ts, w, h, saved: !!saved });
+const plain = ({ id, blob, ts, w, h, saved, processed, look, keep }) => ({
+  id, blob, ts, w, h, saved: !!saved, processed: processed || null, look: look || null, keep: keep || null,
+});
 
 export const putPhoto = (p) => run('readwrite', (s) => s.put(plain(p)));
 export const allPhotos = () => run('readonly', (s) => s.getAll()).then((list) => (list || []).sort((a, b) => a.ts - b.ts));

@@ -50,6 +50,7 @@
       <div class="badges">
         <button id="sceneBadge" class="badge" type="button" data-level="idle"><i class="dot"></i><span id="sceneText">正在打开相机</span></button>
         <span id="demoBadge" class="badge badge-demo" hidden>演示</span>
+        <span id="aiBadge" class="badge badge-ai" hidden></span>
       </div>
 
       <div id="refPanel" class="ref-panel" hidden>
@@ -121,13 +122,38 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </header>
-    <p class="sheet-note">点「存到相册」后，在弹出的菜单里选「存储图像」。</p>
+    <p class="sheet-note">点照片换风格；点右上角圆圈选择。「存到相册」后在菜单里选「存储图像」。</p>
     <p id="sheetEmpty" class="sheet-empty" hidden>还没有拍照片。</p>
     <div id="grid" class="grid"></div>
+    <label class="toggle"><input id="keepOriginal" type="checkbox"><span>同时保存原图</span></label>
     <footer class="sheet-foot">
       <button id="delBtn" class="btn btn-ghost" type="button">删除</button>
       <button id="saveBtn" class="btn btn-primary" type="button">存到相册</button>
     </footer>
+  </div>
+</section>
+
+<section id="viewer" class="sheet" hidden>
+  <div class="sheet-panel viewer-panel" role="dialog" aria-modal="true" aria-labelledby="viewerTitle">
+    <header class="sheet-head">
+      <h2 id="viewerTitle">出片</h2>
+      <button id="viewerClose" class="icon-btn" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="viewer-stage">
+      <img id="viewerImg" alt="照片" draggable="false">
+      <span id="viewerBadge" class="viewer-badge" hidden>原图</span>
+      <span id="viewerBusy" class="viewer-busy" hidden>出片中…</span>
+    </div>
+    <p class="sheet-note">按住照片和原图对比</p>
+    <div id="styleChips" class="chips" role="radiogroup" aria-label="风格">
+      <button type="button" role="radio" data-style="original" aria-checked="false">原图</button>
+      <button type="button" role="radio" data-style="clear" aria-checked="false">清透</button>
+      <button type="button" role="radio" data-style="cream" aria-checked="false">奶油</button>
+      <button type="button" role="radio" data-style="film" aria-checked="false">胶片</button>
+    </div>
+    <label class="toggle"><input id="cropToggle" type="checkbox" checked><span>AI 裁剪构图</span></label>
   </div>
 </section>
 
@@ -142,12 +168,13 @@
     <dl class="legend">
       <div><dt><span class="lg lg-skel"></span>骨架线</dt><dd>人现在的姿势。红色差得多，黄色快到了，绿色可以拍。</dd></div>
       <div><dt><span class="lg lg-ghost"></span>虚线</dt><dd>目标：人该站在哪、摆成什么样。</dd></div>
+      <div><dt><span class="lg lg-frame"></span>黄色虚线框</dt><dd>AI 推荐的取景：往前走或转动手机，让画面对准它。</dd></div>
       <div><dt><span class="lg lg-arrow"></span>箭头</dt><dd>画面里的人或景物应该往哪边去。</dd></div>
       <div><dt><span class="lg lg-level"></span>水平线</dt><dd>中间的线和两边的短线连成一条直线，手机就拿正了。</dd></div>
       <div><dt><span class="lg lg-ring"></span>快门外圈</dt><dd>越满越接近，变绿就可以按快门。</dd></div>
       <div><dt><span class="lg lg-ta">TA</span>「让TA…」</dt><dd>说给被拍的人。拍照的人照着说一声就行，「你左手边」指拍照人自己的左手边。</dd></div>
     </dl>
-    <p class="help-note">识别都在手机上完成，画面和照片不会上传。</p>
+    <p class="help-note">拍完会自动裁剪、校正曝光和白平衡，并套上适合场景的风格；在相册里点照片可以换。识别和处理都在手机上完成，画面和照片不会上传。</p>
   </div>
 </section>
 

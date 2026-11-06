@@ -13,12 +13,15 @@
 // everything in the frame down, and turning the phone right moves everything left.
 
 import { P, clamp, angleAt, personGeometry } from './geom.js';
+import { frameHint } from './frame.js';
+import { lightRules } from './light.js';
 
 const THIRDS = [1 / 3, 1 / 2, 2 / 3];
 const nearest = (arr, v) => arr.reduce((b, t) => (Math.abs(t - v) < Math.abs(b - v) ? t : b));
 const RANK = { bad: 0, warn: 1, tip: 2 };
 
-export function analyze({ lm, aspect, selfie = false, tilt = null, horizon = null }) {
+// light: from measureLight(); frame: the AI crop pick from bestBox(), or null.
+export function analyze({ lm, aspect, selfie = false, tilt = null, horizon = null, light = null, frame = null }) {
   const hints = [];
   let scene = 'none';
   let person = null;
@@ -30,7 +33,12 @@ export function analyze({ lm, aspect, selfie = false, tilt = null, horizon = nul
   } else if (horizon && horizon.y != null) {
     scene = 'landscape';
     horizonRule(horizon, hints);
+  } else if (frame) {
+    scene = 'still';
   }
+  const fh = frameHint(frame, scene, selfie);
+  if (fh) hints.push(fh);
+  lightRules(light, selfie, hints);
   levelRule(tilt, scene, hints);
   return finish(scene, person, hints);
 }

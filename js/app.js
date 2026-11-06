@@ -1,10 +1,13 @@
 // 拍好: camera, frame loop, and the UI around the guidance logic.
 
-import { coverCrop, SHOT_NAME } from './geom.js';
+import { coverCrop, SHOT_NAME, clamp, personGeometry } from './geom.js';
 import { analyze, findHorizon, finish } from './guide.js';
 import { prepareReference, compareToReference, compareScene, alignImages, grayOf, boneLimb } from './match.js';
 import { drawOverlay, COLOR, scoreColor } from './draw.js';
 import { demoFrame, paintDemo, demoPose, DEMO_FINAL } from './demo.js';
+import { measureLight } from './light.js';
+import { bestBox, boxesContaining } from './frame.js';
+import { STYLE_NAMES } from './develop.js';
 import * as pose from './pose.js';
 import * as store from './store.js';
 
@@ -23,7 +26,9 @@ const el = {
   shutter: $('shutter'), ringArc: $('ringArc'), readyLabel: $('readyLabel'), flipBtn: $('flipBtn'),
   voiceBtn: $('voiceBtn'), helpBtn: $('helpBtn'), modeBtns: [...document.querySelectorAll('[data-mode]')],
   sheet: $('sheet'), sheetClose: $('sheetClose'), grid: $('grid'), sheetEmpty: $('sheetEmpty'),
-  saveBtn: $('saveBtn'), delBtn: $('delBtn'),
+  saveBtn: $('saveBtn'), delBtn: $('delBtn'), keepOriginal: $('keepOriginal'), aiBadge: $('aiBadge'),
+  viewer: $('viewer'), viewerClose: $('viewerClose'), viewerImg: $('viewerImg'), viewerBadge: $('viewerBadge'),
+  viewerBusy: $('viewerBusy'), styleChips: $('styleChips'), cropToggle: $('cropToggle'),
   help: $('help'), helpClose: $('helpClose'), toast: $('toast'), hapticLabel: $('hapticLabel'),
 };
 
@@ -64,6 +69,11 @@ const state = {
   motionOn: false,
   horizon: null,
   horizonAt: 0,
+  light: null,
+  aiPick: null,
+  aiAt: 0,
+  lastResult: null,
+  viewing: null,
   align: null,
   ref: null,
   photos: [],
@@ -209,6 +219,87 @@ async function loadModel() {
   }
 }
 
+/* ---------- AI worker: composition model and photo development ---------- */
+
+const ai = { worker: null, seq: 0, pending: new Map(), state: 'idle', busy: false, lastScore: 0 };
+const frameCanvas = document.createElement('canvas');
+frameCanvas.width = 256;
+frameCanvas.height = 256;
+const fctx = frameCanvas.getContext('2d', { willReadFrequently: true });
+
+function aiFail(err) {
+  ai.state = 'failed';
+  for (const p of ai.pending.values()) p.reject(err);
+  ai.pending.clear();
+}
+
+function aiCall(type, payload = {}, transfer = []) {
+  if (!ai.worker) {
+    try {
+      ai.worker = new Worker(new URL('./ai-worker.js', import.meta.url), { type: 'module' });
+    } catch (err) {
+      aiFail(err);
+      return Promise.reject(err);
+    }
+    ai.worker.onmessage = (e) => {
+      const p = ai.pending.get(e.data.id);
+      if (!p) return;
+      ai.pending.delete(e.data.id);
+      if (e.data.ok) p.resolve(e.data.result); else p.reject(new Error(e.data.error));
+    };
+    ai.worker.onerror = (e) => { console.error('AI worker', e.message || e); aiFail(new Error(e.message || 'worker error')); };
+  }
+  const id = ++ai.seq;
+  return new Promise((resolve, reject) => {
+    ai.pending.set(id, { resolve, reject });
+    ai.worker.postMessage({ id, type, ...payload }, transfer);
+  });
+}
+
+async function loadAi() {
+  if (ai.state === 'loading' || ai.state === 'ready') return;
+  ai.state = 'loading';
+  try {
+    await aiCall('load');
+    ai.state = 'ready';
+  } catch (err) {
+    console.warn('AI framing unavailable', err);
+    ai.state = 'failed';
+  }
+}
+
+// The person's extent in the frame, so AI crops never cut them out.
+function personRect(lm) {
+  if (!lm) return null;
+  const g = personGeometry(lm, state.aspect);
+  const xs = [0, 11, 12, 15, 16, 23, 24].map((i) => lm[i].x).filter((x) => x > -0.2 && x < 1.2);
+  return {
+    x0: clamp(Math.min(...xs) - 0.02, 0, 1),
+    x1: clamp(Math.max(...xs) + 0.02, 0, 1),
+    y0: clamp(g.headTop, 0, 1),
+    y1: clamp(g.bottom, 0, 1),
+  };
+}
+
+// About once a second, rate the current frame's candidate crops in the worker.
+function maybeScoreFrame(now) {
+  if (ai.state !== 'ready' || ai.busy || state.mode !== 'guide' || now - ai.lastScore < 1000) return;
+  ai.busy = true;
+  ai.lastScore = now;
+  const ids = boxesContaining(personRect(state.lm));
+  fctx.drawImage(ana, 0, 0, 256, 256);
+  const rgba = fctx.getImageData(0, 0, 256, 256).data;
+  aiCall('score', { rgba }, [rgba.buffer])
+    .then((scores) => {
+      state.aiPick = ids.length ? bestBox(scores, ids, state.aiPick ? state.aiPick.index : null) : null;
+      state.aiAt = performance.now();
+    })
+    .catch((err) => console.warn('AI score', err))
+    .finally(() => { ai.busy = false; });
+}
+
+const currentAiPick = () => (state.aiPick && performance.now() - state.aiAt < 3000 ? state.aiPick : null);
+
 /* ---------- level (motion sensor) ---------- */
 
 function initMotion() {
@@ -280,6 +371,14 @@ function sampleSmall(now) {
   } else if (now - state.horizonAt > 800) {
     state.horizon = null;
   }
+  const m = measureLight(img, state.lm);
+  const p = state.light;
+  const k = 0.35;
+  state.light = !p ? m : {
+    mean: p.mean + (m.mean - p.mean) * k,
+    clip: p.clip + (m.clip - p.clip) * k,
+    face: m.face == null ? null : p.face == null ? m.face : p.face + (m.face - p.face) * k,
+  };
   const d = state.ref && state.ref.data;
   if (state.mode === 'match' && d && !d.prep && d.gray && d.w === small.width && d.h === small.height) {
     state.align = alignImages(d.gray, grayOf(img), small.width, small.height);
@@ -292,13 +391,18 @@ function evaluate() {
   if (state.mode === 'match') {
     const d = state.ref && state.ref.data;
     if (!d) return { kind: 'empty', ...finish('none', null, []) };
-    if (d.prep) return { kind: 'match', ...compareToReference(d.prep, state.lm, state.aspect, selfie, tilt) };
+    if (d.prep) return { kind: 'match', ...compareToReference(d.prep, state.lm, state.aspect, selfie, tilt, state.light) };
     if (state.align) return { kind: 'scene', ...compareScene(state.align, selfie, tilt, small.width, small.height) };
     return { kind: 'scene', ...finish('none', null, []) };
   }
   return {
     kind: 'guide',
-    ...analyze({ lm: state.lm, aspect: state.aspect, selfie, tilt, horizon: state.lm ? null : state.horizon }),
+    ...analyze({
+      lm: state.lm, aspect: state.aspect, selfie, tilt,
+      horizon: state.lm ? null : state.horizon,
+      light: state.light,
+      frame: currentAiPick(),
+    }),
   };
 }
 
@@ -332,6 +436,7 @@ function loop(now) {
   state.lm = smooth(state.lm, raw, now);
 
   if (state.frame % 5 === 0) sampleSmall(now);
+  maybeScoreFrame(now);
   present(evaluate(), now);
 }
 
@@ -420,7 +525,9 @@ function setRing(v, tone) {
 
 let lastBadge = '';
 let lastLabel = '';
+let lastAi = null;
 function present(result, now) {
+  state.lastResult = result;
   const hint = pickHint(result, now);
   renderHint(hint);
 
@@ -451,11 +558,18 @@ function present(result, now) {
   } else if (!state.demo && state.poseState !== 'ready') badge = 'AI 加载中…';
   else if (result.scene === 'person') { badge = `人像 · ${SHOT_NAME[result.person.shot]}`; level = tone; }
   else if (result.scene === 'landscape') { badge = '风景'; level = tone; }
+  else if (result.scene === 'still') { badge = '景物'; level = tone; }
   else badge = '寻找拍摄对象';
   if (badge + level !== lastBadge) {
     lastBadge = badge + level;
     el.sceneText.textContent = badge;
     el.sceneBadge.dataset.level = level;
+  }
+  const aiText = ai.state === 'loading' ? 'AI 取景加载中' : ai.state === 'failed' ? 'AI 取景不可用' : '';
+  if (aiText !== lastAi) {
+    lastAi = aiText;
+    el.aiBadge.textContent = aiText;
+    el.aiBadge.hidden = !aiText;
   }
 
   const cur = hint ? result.hints.find((h) => h.id === hint.id) : null;
@@ -472,7 +586,10 @@ function present(result, now) {
   if (result.kind === 'guide' && result.scene === 'landscape' && state.horizon && state.horizon.y != null) {
     horizon = { y: state.horizon.y, target: cur && cur.horizon ? cur.horizon.target : null };
   }
+  const pick = result.kind === 'guide' ? currentAiPick() : null;
+  const aiFrame = pick && !pick.aligned ? { box: pick.box, strong: !!(cur && cur.id === 'ai-frame') } : null;
   drawOverlay(octx, el.overlay.width, el.overlay.height, state.dpr, {
+    aiFrame,
     mirror: isMirror(),
     time: now,
     tilt: currentTilt(),
@@ -488,10 +605,58 @@ function present(result, now) {
 
 /* ---------- capture & photos ---------- */
 
-const urls = new Map();
+const urls = new Map(); // original photos
+const purls = new Map(); // developed versions, keyed by photo id
 function photoUrl(p) {
   if (!urls.has(p.id)) urls.set(p.id, URL.createObjectURL(p.blob));
   return urls.get(p.id);
+}
+function displayUrl(p) {
+  if (!p.processed) return photoUrl(p);
+  const cur = purls.get(p.id);
+  if (cur && cur.blob === p.processed) return cur.url;
+  if (cur) URL.revokeObjectURL(cur.url);
+  const url = URL.createObjectURL(p.processed);
+  purls.set(p.id, { blob: p.processed, url });
+  return url;
+}
+function dropUrls(id) {
+  const u = urls.get(id);
+  if (u) URL.revokeObjectURL(u);
+  urls.delete(id);
+  const pu = purls.get(id);
+  if (pu) URL.revokeObjectURL(pu.url);
+  purls.delete(id);
+}
+
+// Crop, correct and style a photo in the worker. style: 'auto' or a key from STYLE_NAMES.
+async function processPhoto(photo, style, crop) {
+  photo.busy = true;
+  refreshPhoto(photo);
+  try {
+    const scene = state.lastResult ? state.lastResult.scene : 'none';
+    const r = await aiCall('develop', { blob: photo.blob, style, crop, scene, keep: photo.keep || null });
+    photo.processed = r.blob;
+    photo.look = { style: r.style, crop: !!crop, cropBox: r.crop };
+    photo.saved = false;
+  } catch (err) {
+    console.warn('develop failed', err);
+    toast('自动出片没成功，这张先按原图保存');
+  }
+  photo.busy = false;
+  store.putPhoto(photo).catch(() => {});
+  updateThumb(false);
+  refreshPhoto(photo);
+}
+
+// Keep the gallery tile and the open viewer in step with a photo's state.
+function refreshPhoto(photo) {
+  const tile = el.grid.querySelector(`.ph[data-id="${photo.id}"]`);
+  if (tile) {
+    tile.querySelector('img').src = displayUrl(photo);
+    tile.classList.toggle('busy', !!photo.busy);
+  }
+  if (state.viewing === photo) renderViewer();
 }
 
 async function capture() {
@@ -507,13 +672,17 @@ async function capture() {
   el.flash.classList.add('on');
   const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.92));
   if (!blob) { toast('没拍上，再按一次'); return; }
-  const photo = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, blob, ts: Date.now(), w: c.width, h: c.height, saved: false };
+  const photo = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, blob, ts: Date.now(), w: c.width, h: c.height,
+    saved: false, keep: personRect(state.lm),
+  };
   state.photos.push(photo);
   store.putPhoto(photo).catch(() => {});
   updateThumb(true);
+  processPhoto(photo, 'auto', prefs.get('aiCrop', true));
   if (!prefs.get('firstShotTold', false)) {
     prefs.set('firstShotTold', true);
-    toast('拍好了。照片先放在 App 里，点左下角存到相册', 3600);
+    toast('拍好了，正在自动出片。点左下角可以换风格、存到相册', 3600);
   }
 }
 
@@ -521,7 +690,7 @@ function updateThumb(bump) {
   const last = state.photos[state.photos.length - 1];
   const unsaved = state.photos.filter((p) => !p.saved).length;
   el.thumbImg.hidden = !last;
-  if (last) el.thumbImg.src = photoUrl(last);
+  if (last) el.thumbImg.src = displayUrl(last);
   el.countBadge.hidden = !unsaved;
   el.countBadge.textContent = String(unsaved);
   el.thumbBtn.setAttribute('aria-label', unsaved ? `还有 ${unsaved} 张没存到相册` : '本次拍的照片');
@@ -548,26 +717,39 @@ function closeSheet() { el.sheet.hidden = true; }
 
 function buildGrid() {
   const items = [...state.photos].reverse().map((p) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'ph';
-    b.dataset.id = p.id;
-    b.setAttribute('aria-pressed', String(selected.has(p.id)));
-    b.setAttribute('aria-label', `${new Date(p.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 拍的照片`);
+    const time = new Date(p.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    const tile = document.createElement('div');
+    tile.className = 'ph';
+    tile.dataset.id = p.id;
+    tile.classList.toggle('busy', !!p.busy);
+    tile.classList.toggle('sel', selected.has(p.id));
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'ph-open';
+    open.setAttribute('aria-label', `查看 ${time} 拍的照片`);
     const img = document.createElement('img');
-    img.src = photoUrl(p);
+    img.src = displayUrl(p);
     img.alt = '';
-    const check = document.createElement('span');
+    open.append(img);
+    const check = document.createElement('button');
+    check.type = 'button';
     check.className = 'check';
-    check.setAttribute('aria-hidden', 'true');
-    b.append(img, check);
-    if (p.saved) {
+    check.setAttribute('aria-pressed', String(selected.has(p.id)));
+    check.setAttribute('aria-label', `选择 ${time} 拍的照片`);
+    const busy = document.createElement('span');
+    busy.className = 'ph-busy';
+    busy.textContent = '出片中…';
+    tile.append(open, check, busy);
+    const labels = [];
+    if (p.look && p.look.style && p.look.style !== 'original') labels.push(STYLE_NAMES[p.look.style]);
+    if (p.saved) labels.push('已存');
+    if (labels.length) {
       const tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = '已存';
-      b.append(tag);
+      tag.textContent = labels.join(' · ');
+      tile.append(tag);
     }
-    return b;
+    return tile;
   });
   el.grid.replaceChildren(...items);
   el.sheetEmpty.hidden = state.photos.length > 0;
@@ -587,7 +769,12 @@ function updateSheetButtons() {
 function saveSelected() {
   const list = state.photos.filter((p) => selected.has(p.id));
   if (!list.length) return;
-  const files = list.map((p) => new File([p.blob], `paihao-${p.ts}.jpg`, { type: 'image/jpeg' }));
+  const keep = el.keepOriginal.checked;
+  const files = [];
+  for (const p of list) {
+    files.push(new File([p.processed || p.blob], `paihao-${p.ts}.jpg`, { type: 'image/jpeg' }));
+    if (keep && p.processed) files.push(new File([p.blob], `paihao-${p.ts}-original.jpg`, { type: 'image/jpeg' }));
+  }
   const done = () => {
     list.forEach((p) => { p.saved = true; store.putPhoto(p).catch(() => {}); });
     selected.clear();
@@ -625,12 +812,60 @@ function deleteSelected() {
   clearTimeout(delTimer);
   const ids = [...selected];
   state.photos = state.photos.filter((p) => !selected.has(p.id));
-  ids.forEach((id) => { const u = urls.get(id); if (u) URL.revokeObjectURL(u); urls.delete(id); });
+  ids.forEach(dropUrls);
   store.removePhotos(ids).catch(() => {});
   selected.clear();
   delArmed = false;
   buildGrid();
   updateThumb(false);
+}
+
+/* ---------- 出片 viewer ---------- */
+
+function openViewer(id) {
+  const p = state.photos.find((x) => x.id === id);
+  if (!p) return;
+  state.viewing = p;
+  renderViewer();
+  el.viewer.hidden = false;
+}
+
+function closeViewer() {
+  el.viewer.hidden = true;
+  state.viewing = null;
+}
+
+function renderViewer() {
+  const p = state.viewing;
+  if (!p) return;
+  el.viewerImg.src = displayUrl(p);
+  el.viewerBadge.hidden = true;
+  el.viewerBusy.hidden = !p.busy;
+  const style = p.look && p.look.style ? p.look.style : 'original';
+  el.styleChips.querySelectorAll('[data-style]').forEach((b) => {
+    b.setAttribute('aria-checked', String(b.dataset.style === style));
+    b.disabled = !!p.busy;
+  });
+  el.cropToggle.checked = p.look ? !!p.look.crop : prefs.get('aiCrop', true);
+  el.cropToggle.disabled = !!p.busy;
+}
+
+function restyle(style) {
+  const p = state.viewing;
+  if (!p || p.busy) return;
+  processPhoto(p, style, el.cropToggle.checked);
+}
+
+// Press and hold the photo to compare with the original.
+function peekOriginal(on) {
+  const p = state.viewing;
+  if (!p) return;
+  if (on && p.processed) {
+    el.viewerImg.src = photoUrl(p);
+    el.viewerBadge.hidden = false;
+  } else {
+    renderViewer();
+  }
 }
 
 /* ---------- 照着拍 reference ---------- */
@@ -801,6 +1036,7 @@ function bindUI() {
     state.facing = state.facing === 'user' ? 'environment' : 'user';
     state.lm = null;
     state.rawLm = null;
+    state.aiPick = null;
     state.stab = freshStab();
     startCamera();
     renderRefUI();
@@ -814,14 +1050,36 @@ function bindUI() {
   el.sheetClose.addEventListener('click', closeSheet);
   el.sheet.addEventListener('click', (e) => { if (e.target === el.sheet) closeSheet(); });
   el.grid.addEventListener('click', (e) => {
-    const b = e.target.closest('.ph');
-    if (!b) return;
-    const id = b.dataset.id;
-    if (selected.has(id)) selected.delete(id); else selected.add(id);
-    b.setAttribute('aria-pressed', String(selected.has(id)));
-    delArmed = false;
-    updateSheetButtons();
+    const tile = e.target.closest('.ph');
+    if (!tile) return;
+    const id = tile.dataset.id;
+    if (e.target.closest('.check')) {
+      if (selected.has(id)) selected.delete(id); else selected.add(id);
+      tile.querySelector('.check').setAttribute('aria-pressed', String(selected.has(id)));
+      tile.classList.toggle('sel', selected.has(id));
+      delArmed = false;
+      updateSheetButtons();
+    } else {
+      openViewer(id);
+    }
   });
+  el.keepOriginal.checked = prefs.get('keepOriginal', false);
+  el.keepOriginal.addEventListener('change', () => prefs.set('keepOriginal', el.keepOriginal.checked));
+  el.viewerClose.addEventListener('click', closeViewer);
+  el.viewer.addEventListener('click', (e) => { if (e.target === el.viewer) closeViewer(); });
+  el.styleChips.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-style]');
+    if (b) restyle(b.dataset.style);
+  });
+  el.cropToggle.addEventListener('change', () => {
+    prefs.set('aiCrop', el.cropToggle.checked);
+    const p = state.viewing;
+    if (p) restyle(p.look && p.look.style ? p.look.style : 'auto');
+  });
+  el.viewerImg.addEventListener('pointerdown', () => peekOriginal(true));
+  for (const t of ['pointerup', 'pointercancel', 'pointerleave']) {
+    el.viewerImg.addEventListener(t, () => peekOriginal(false));
+  }
   el.saveBtn.addEventListener('click', saveSelected);
   el.delBtn.addEventListener('click', deleteSelected);
   const onRefFile = (e) => {
@@ -851,7 +1109,7 @@ function bindUI() {
   el.camRetry.addEventListener('click', startCamera);
   el.camDemo.addEventListener('click', startDemo);
   addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && el.sheet.hidden && el.help.hidden && e.target === document.body) {
+    if (e.code === 'Space' && el.sheet.hidden && el.help.hidden && el.viewer.hidden && e.target === document.body) {
       e.preventDefault();
       capture();
     }
@@ -886,6 +1144,7 @@ function boot() {
     startCamera();
     loadModel();
   }
+  loadAi();
   keepAwake();
   if ('serviceWorker' in navigator && window.isSecureContext && !params.has('nosw')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});

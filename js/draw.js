@@ -24,6 +24,7 @@ export function drawOverlay(ctx, W, H, dpr, o) {
   if (o.edge) drawEdge(ctx, W, H, dpr);
   if (o.horizon) drawHorizon(ctx, W, H, dpr, o.horizon);
   if (o.box) drawBox(ctx, H, dpr, X(o.box), o.box);
+  if (o.aiFrame) drawAiFrame(ctx, W, H, dpr, o.aiFrame, o.mirror);
   if (o.ghost) drawSkeleton(ctx, o.ghost, X, Y, dpr, () => COLOR.ghost, true);
   if (o.lm) drawSkeleton(ctx, o.lm, X, Y, dpr, o.boneColor || (() => COLOR.idle), false);
   if (o.arrow) drawArrow(ctx, X(o.arrow.from), Y(o.arrow.from), X(o.arrow.to), Y(o.arrow.to), dpr, o.time || 0);
@@ -80,6 +81,30 @@ function drawBox(ctx, H, dpr, x, box) {
   if (ctx.roundRect) ctx.roundRect(x - w / 2, top, w, bottom - top, 14 * dpr);
   else ctx.rect(x - w / 2, top, w, bottom - top);
   ctx.stroke();
+  ctx.restore();
+}
+
+// The crop the composition model likes best. Strong while it is the hint on screen.
+function drawAiFrame(ctx, W, H, dpr, { box, strong }, mirror) {
+  const x = (mirror ? 1 - box.x - box.w : box.x) * W;
+  const y = box.y * H, w = box.w * W, h = box.h * H;
+  ctx.save();
+  ctx.lineWidth = (strong ? 2.5 : 1.5) * dpr;
+  ctx.setLineDash([10 * dpr, 6 * dpr]);
+  ctx.strokeStyle = strong ? '#ffd34d' : 'rgba(255,255,255,0.55)';
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 4 * dpr;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 10 * dpr);
+  else ctx.rect(x, y, w, h);
+  ctx.stroke();
+  if (strong) {
+    ctx.setLineDash([]);
+    ctx.font = `600 ${12 * dpr}px -apple-system, "PingFang SC", sans-serif`;
+    ctx.fillStyle = '#ffd34d';
+    ctx.textBaseline = 'top';
+    ctx.fillText('AI 推荐取景', x + 8 * dpr, y + 6 * dpr);
+  }
   ctx.restore();
 }
 
