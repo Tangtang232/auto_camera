@@ -1,0 +1,9 @@
+{
+  "name": "paihao",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "start": "python -m http.server 5173"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "拍好 · AI 引导相机",
+  "short_name": "拍好",
+  "description": "会教你拍照的相机：AI 在手机上实时看取景画面，用轮廓、箭头和颜色引导你把照片拍好。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0b0d",
+  "theme_color": "#0a0b0d",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

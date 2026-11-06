@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>拍好</title>
+<meta name="description" content="会教你拍照的相机：AI 在手机上实时看取景画面，用轮廓、箭头和颜色引导你把照片拍好。">
+<meta name="theme-color" content="#0a0b0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="拍好">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="css/app.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <button id="voiceBtn" class="icon-btn" type="button" aria-pressed="false" aria-label="语音提示：关">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z"/>
+        <path class="wave" d="M15.5 9a4.2 4.2 0 0 1 0 6"/>
+        <path class="wave" d="M18 6.5a7.8 7.8 0 0 1 0 11"/>
+        <path class="mute" d="M16 9.5l5 5M21 9.5l-5 5"/>
+      </svg>
+    </button>
+    <div class="modes" role="tablist" aria-label="拍摄模式">
+      <button type="button" role="tab" data-mode="guide" aria-selected="true">智能引导</button>
+      <button type="button" role="tab" data-mode="match" aria-selected="false">照着拍</button>
+    </div>
+    <button id="helpBtn" class="icon-btn" type="button" aria-label="怎么看提示">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"/>
+        <path d="M9.6 9.4a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.6"/>
+        <path d="M12 17.2h.01"/>
+      </svg>
+    </button>
+  </header>
+
+  <main id="stage" class="stage">
+    <div id="vf" class="viewfinder">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="demoCanvas" hidden></canvas>
+      <img id="onion" alt="" hidden>
+      <canvas id="overlay"></canvas>
+
+      <div class="badges">
+        <button id="sceneBadge" class="badge" type="button" data-level="idle"><i class="dot"></i><span id="sceneText">正在打开相机</span></button>
+        <span id="demoBadge" class="badge badge-demo" hidden>演示</span>
+      </div>
+
+      <div id="refPanel" class="ref-panel" hidden>
+        <button id="refThumbBtn" class="ref-thumb" type="button" aria-label="按住查看参考图"><img id="refThumb" alt="参考图"></button>
+        <button id="onionBtn" class="mini" type="button" aria-pressed="true">叠图</button>
+        <label class="mini">换图<input id="refFile2" class="file-input" type="file" accept="image/*"></label>
+        <button id="refClear" class="mini" type="button">不用了</button>
+      </div>
+
+      <div id="refEmpty" class="ref-empty" hidden>
+        <h2>照着拍</h2>
+        <p>选一张你想拍成的照片。AI 会把里面的姿势和构图叠在取景画面上，带你一步步对齐。</p>
+        <label class="btn btn-primary">从相册选一张<input id="refFile" class="file-input" type="file" accept="image/*"></label>
+        <button id="refDemo" class="btn btn-ghost" type="button" hidden>用演示参考图</button>
+      </div>
+
+      <button id="motionChip" class="chip" type="button" hidden>轻点画面，开启水平仪</button>
+
+      <div id="hint" class="hint" data-level="idle" aria-live="polite">
+        <i class="dot"></i>
+        <div class="hint-body"><strong id="hintText">正在打开相机</strong><span id="hintWhy"></span></div>
+      </div>
+
+      <div id="camError" class="cam-error" hidden>
+        <h2 id="camErrTitle">打不开摄像头</h2>
+        <p id="camErrText"></p>
+        <div class="row">
+          <button id="camRetry" class="btn btn-primary" type="button">重试</button>
+          <button id="camDemo" class="btn btn-ghost" type="button">看演示</button>
+        </div>
+      </div>
+
+      <div id="flash" class="flash"></div>
+    </div>
+  </main>
+
+  <footer class="controls">
+    <button id="thumbBtn" class="thumb" type="button" aria-label="本次拍的照片">
+      <img id="thumbImg" alt="" hidden>
+      <span id="countBadge" class="count" hidden>0</span>
+    </button>
+    <div class="shutter-wrap">
+      <span id="readyLabel" class="ready-label" hidden></span>
+      <button id="shutter" class="shutter" type="button" aria-label="拍照" data-state="idle">
+        <svg viewBox="0 0 88 88" aria-hidden="true">
+          <circle class="ring-track" cx="44" cy="44" r="40"/>
+          <circle id="ringArc" class="ring-arc" cx="44" cy="44" r="40"/>
+        </svg>
+        <span class="shutter-core"></span>
+      </button>
+    </div>
+    <button id="flipBtn" class="icon-btn round" type="button" aria-label="切换前后摄像头">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3.5 8.5h3l1.6-2.2h7.8l1.6 2.2h3v10h-17z"/>
+        <path d="M9.2 12.2a3 3 0 0 1 5.1-1.1l.7.8"/>
+        <path d="M15 9.6v2.3h-2.3"/>
+        <path d="M14.8 14.8a3 3 0 0 1-5.1 1.1l-.7-.8"/>
+        <path d="M9 17.4v-2.3h2.3"/>
+      </svg>
+    </button>
+  </footer>
+</div>
+
+<section id="sheet" class="sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <header class="sheet-head">
+      <h2 id="sheetTitle">本次拍的照片</h2>
+      <button id="sheetClose" class="icon-btn" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <p class="sheet-note">点「存到相册」后，在弹出的菜单里选「存储图像」。</p>
+    <p id="sheetEmpty" class="sheet-empty" hidden>还没有拍照片。</p>
+    <div id="grid" class="grid"></div>
+    <footer class="sheet-foot">
+      <button id="delBtn" class="btn btn-ghost" type="button">删除</button>
+      <button id="saveBtn" class="btn btn-primary" type="button">存到相册</button>
+    </footer>
+  </div>
+</section>
+
+<section id="help" class="sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+    <header class="sheet-head">
+      <h2 id="helpTitle">怎么看提示</h2>
+      <button id="helpClose" class="icon-btn" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <dl class="legend">
+      <div><dt><span class="lg lg-skel"></span>骨架线</dt><dd>人现在的姿势。红色差得多，黄色快到了，绿色可以拍。</dd></div>
+      <div><dt><span class="lg lg-ghost"></span>虚线</dt><dd>目标：人该站在哪、摆成什么样。</dd></div>
+      <div><dt><span class="lg lg-arrow"></span>箭头</dt><dd>画面里的人或景物应该往哪边去。</dd></div>
+      <div><dt><span class="lg lg-level"></span>水平线</dt><dd>中间的线和两边的短线连成一条直线，手机就拿正了。</dd></div>
+      <div><dt><span class="lg lg-ring"></span>快门外圈</dt><dd>越满越接近，变绿就可以按快门。</dd></div>
+      <div><dt><span class="lg lg-ta">TA</span>「让TA…」</dt><dd>说给被拍的人。拍照的人照着说一声就行，「你左手边」指拍照人自己的左手边。</dd></div>
+    </dl>
+    <p class="help-note">识别都在手机上完成，画面和照片不会上传。</p>
+  </div>
+</section>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<label id="hapticLabel" class="haptic" aria-hidden="true"><input type="checkbox" switch tabindex="-1"></label>
+</body>
+</html>
