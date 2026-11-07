@@ -6,15 +6,26 @@ const VERSION = '0.10.14';
 const BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VERSION}`;
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
 
-let lib = null;
-let fileset = null;
+let visionLoad = null;
 let videoLandmarker = null;
 let imageLandmarker = null;
 let lastTs = 0;
 
+// The MediaPipe library and its wasm files, shared with the scene classifier (classify.js).
+export function vision() {
+  if (!visionLoad) {
+    visionLoad = (async () => {
+      const lib = await import(`${BASE}/vision_bundle.mjs`);
+      const fileset = await lib.FilesetResolver.forVisionTasks(`${BASE}/wasm`);
+      return { lib, fileset };
+    })();
+    visionLoad.catch(() => { visionLoad = null; }); // let a later call retry
+  }
+  return visionLoad;
+}
+
 async function create(runningMode) {
-  lib ??= await import(`${BASE}/vision_bundle.mjs`);
-  fileset ??= await lib.FilesetResolver.forVisionTasks(`${BASE}/wasm`);
+  const { lib, fileset } = await vision();
   const options = (delegate) => ({
     baseOptions: { modelAssetPath: MODEL, delegate },
     runningMode,

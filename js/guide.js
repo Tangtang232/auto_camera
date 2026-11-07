@@ -15,30 +15,40 @@
 import { P, clamp, angleAt, personGeometry } from './geom.js';
 import { frameHint } from './frame.js';
 import { lightRules } from './light.js';
+import { sceneRules } from './scene.js';
 
 const THIRDS = [1 / 3, 1 / 2, 2 / 3];
 const nearest = (arr, v) => arr.reduce((b, t) => (Math.abs(t - v) < Math.abs(b - v) ? t : b));
 const RANK = { bad: 0, warn: 1, tip: 2 };
 
 // light: from measureLight(); frame: the AI crop pick from bestBox(), or null.
-export function analyze({ lm, aspect, selfie = false, tilt = null, horizon = null, light = null, frame = null }) {
+// context (all optional): {override, kind, lowLight, sunset, elev, flatDev, shake}
+//   override  a scene the user picked by hand; kind  the scene the classifier settled on
+//   elev / flatDev / shake  the phone's angle and steadiness, from the motion sensors
+export function analyze({ lm, aspect, selfie = false, tilt = null, horizon = null, light = null, frame = null, context = null }) {
+  const ctx = context || {};
+  const forced = ctx.override || null;
   const hints = [];
   let scene = 'none';
   let person = null;
-  if (lm) {
+  if (lm && (!forced || forced === 'person')) {
     scene = 'person';
     person = personGeometry(lm, aspect);
     framingRules(person, lm, selfie, hints);
     poseRules(person, lm, aspect, selfie, hints);
-  } else if (horizon && horizon.y != null) {
-    scene = 'landscape';
-    horizonRule(horizon, hints);
-  } else if (frame) {
-    scene = 'still';
+  } else if (forced !== 'person') {
+    const level = horizon && horizon.y != null;
+    const kind = forced || ctx.kind || null;
+    // A warm "sky" without a sunset is more likely a lit wall than a horizon.
+    if (kind) scene = kind;
+    else if (level && !horizon.warm) scene = 'landscape';
+    else if (frame) scene = 'still';
+    if (level && (scene === 'landscape' || scene === 'sunset')) horizonRule(horizon, hints, scene === 'sunset');
   }
+  sceneRules(scene, ctx, hints);
   const fh = frameHint(frame, scene, selfie);
   if (fh) hints.push(fh);
-  lightRules(light, selfie, hints);
+  lightRules(light, selfie, hints, { scene, sunset: scene === 'sunset' || !!ctx.sunset });
   levelRule(tilt, scene, hints);
   return finish(scene, person, hints);
 }
@@ -159,13 +169,24 @@ export function levelRule(tilt, scene, out) {
   if (tilt == null) return;
   const a = Math.abs(tilt);
   if (a <= 2) return;
+  const lines = scene === 'landscape' || scene === 'city' || scene === 'sunset';
   out.push({
-    id: 'level', level: a > 6 ? 'bad' : 'warn', order: scene === 'landscape' ? 0 : 5,
+    id: 'level', level: a > 6 ? 'bad' : 'warn', order: lines ? 0 : 5,
     text: '手机拿正一点', why: `画面歪了 ${Math.round(a)}°`,
   });
 }
 
-function horizonRule(h, out) {
+function horizonRule(h, out, sunset = false) {
+  if (sunset) {
+    // At sunset the sky is the subject: keep the horizon on the lower third.
+    if (h.y >= 0.55) return;
+    out.push({
+      id: 'horizon', level: 'warn', order: 3, text: '手机往上抬一点', why: '日落多留点天空',
+      arrow: { from: { x: 0.5, y: h.y }, to: { x: 0.5, y: 2 / 3 } },
+      horizon: { y: h.y, target: 2 / 3 },
+    });
+    return;
+  }
   if (h.y < 0.4 || h.y > 0.6) return;
   const lower = !!h.cloudy; // an interesting sky earns more room
   const target = lower ? 2 / 3 : 1 / 3;
@@ -179,7 +200,8 @@ function horizonRule(h, out) {
 }
 
 // Finds a sky-over-ground horizon in a small RGBA image ({data, width, height}).
-// Returns {sky, y, strength, cloudy}; y is null when no clear, level-ish horizon is found.
+// Returns {sky, y, strength, cloudy, warm}; y is null when no clear, level-ish horizon is found.
+// warm: the sky is orange rather than blue (sunset); callers only trust it in a sunset scene.
 export function findHorizon(img) {
   const { data, width: w, height: h } = img;
   const lum = new Float32Array(w * h);
@@ -195,7 +217,9 @@ export function findHorizon(img) {
     }
   }
   topR /= topN; topB /= topN; topL /= topN;
-  if (!(topL > 0.42 && topB >= topR * 0.92)) return { sky: false, y: null };
+  const blue = topL > 0.42 && topB >= topR * 0.92;
+  const warm = !blue && topL > 0.3 && topR > topB * 1.25;
+  if (!blue && !warm) return { sky: false, y: null };
 
   const k = Math.max(2, Math.round(h * 0.06));
   const edgeRow = (x0, x1) => {
@@ -216,10 +240,10 @@ export function findHorizon(img) {
   };
   const half = Math.floor(w / 2);
   const L = edgeRow(0, half), R = edgeRow(half, w);
-  if (L.best < 0.08 || R.best < 0.08 || Math.abs(L.at - R.at) > h * 0.08) return { sky: true, y: null };
+  if (L.best < 0.08 || R.best < 0.08 || Math.abs(L.at - R.at) > h * 0.08) return { sky: true, y: null, warm };
   const row = (L.at + R.at) / 2;
   const y = row / h;
-  if (y < 0.12 || y > 0.88) return { sky: true, y: null };
+  if (y < 0.12 || y > 0.88) return { sky: true, y: null, warm };
 
   // Sky texture: clouds make neighbouring pixels differ; a plain gradient does not.
   let t = 0, n = 0;
@@ -232,5 +256,5 @@ export function findHorizon(img) {
     }
   }
   const texture = n ? t / n : 0;
-  return { sky: true, y, strength: (L.best + R.best) / 2, cloudy: texture > 0.025 };
+  return { sky: true, y, strength: (L.best + R.best) / 2, cloudy: texture > 0.025, warm };
 }

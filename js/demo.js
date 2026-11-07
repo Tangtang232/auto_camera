@@ -70,6 +70,120 @@ export function paintDemo(ctx, w, h, f) {
   if (f.lm) paintFigure(ctx, w, h, f.lm, f.s);
 }
 
+/* ---------- scene demos: ?demo&scene=food|pet|city|night|sunset ---------- */
+// A painted scene plus scripted sensor readings, over a 12-second loop: the first
+// seconds show the hint for that scene, then the phone "moves" until it is ready.
+
+export const DEMO_SCENES = ['food', 'pet', 'city', 'night', 'sunset'];
+const SCENE_LOOP = 12;
+
+export function demoSceneFrame(scene, time) {
+  const t = ((time % SCENE_LOOP) + SCENE_LOOP) % SCENE_LOOP;
+  const a = seg(t, 3, 6);
+  const f = { scene, t, lm: null, s: 0, tilt: 0, horizonY: 0.6, sensors: {} };
+  if (scene === 'food') {
+    // level → 45° from above → straight down but crooked → straight down and level
+    const elev = -45 * a - 43 * seg(t, 7, 9);
+    f.sensors = { elev, flatDev: elev < -70 ? 12 - 10 * seg(t, 10, 11) : null };
+  } else if (scene === 'pet') {
+    f.sensors = { elev: -50 + 42 * a };
+  } else if (scene === 'city') {
+    f.sensors = { elev: 14 - 14 * a };
+  } else if (scene === 'night') {
+    f.sensors = { shake: 30 - 26 * a };
+  } else if (scene === 'sunset') {
+    f.horizonY = 0.42 + 0.26 * a;
+  }
+  return f;
+}
+
+function circle(ctx, x, y, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function ellipse(ctx, x, y, rx, ry, color, rot = 0) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function vgrad(ctx, y0, y1, stops) {
+  const g = ctx.createLinearGradient(0, y0, 0, y1);
+  stops.forEach((c, i) => g.addColorStop(i / (stops.length - 1), c));
+  return g;
+}
+
+function buildings(ctx, w, h, base, wall, lit, rate) {
+  const tops = [0.38, 0.22, 0.3, 0.14, 0.27, 0.35];
+  const bw = w / tops.length;
+  tops.forEach((top, k) => {
+    const x = k * bw;
+    ctx.fillStyle = wall[k % wall.length];
+    ctx.fillRect(x + 2, top * h, bw - 4, base * h - top * h);
+    for (let y = top * h + 12; y < base * h - 14; y += 22) {
+      for (let wx = x + 10; wx < x + bw - 14; wx += 16) {
+        const on = ((wx * 7 + y * 13 + k * 31) % 100) / 100 < rate;
+        ctx.fillStyle = on ? lit : 'rgba(0,0,0,0.25)';
+        ctx.fillRect(wx, y, 7, 10);
+      }
+    }
+  });
+}
+
+export function paintSceneDemo(ctx, w, h, f) {
+  if (f.scene === 'food') {
+    ctx.fillStyle = vgrad(ctx, 0, h, ['#9a6a45', '#6e4a2f']);
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(60,35,20,0.25)';
+    ctx.lineWidth = 2;
+    for (let y = 18; y < h; y += 38) { ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(w * 0.3, y + 8, w * 0.6, y - 8, w, y + 4); ctx.stroke(); }
+    const cx = w * 0.5, cy = h * 0.52, r = w * 0.34;
+    circle(ctx, cx, cy, r, '#f4f1ea');
+    circle(ctx, cx, cy, r * 0.78, '#ebe6db');
+    ellipse(ctx, cx, cy, r * 0.58, r * 0.5, '#e09a3e');
+    for (const [dx, dy] of [[-0.25, -0.15], [0.2, -0.22], [0.05, 0.2], [-0.15, 0.22], [0.3, 0.1]]) circle(ctx, cx + dx * r, cy + dy * r, r * 0.11, '#c63b2b');
+    for (const [dx, dy, rot] of [[-0.05, -0.05, 0.6], [0.18, 0.05, -0.4], [-0.3, 0.05, 1.2]]) ellipse(ctx, cx + dx * r, cy + dy * r, r * 0.13, r * 0.06, '#4f9a45', rot);
+    circle(ctx, w * 0.86, h * 0.14, w * 0.11, '#f2efe9');
+    circle(ctx, w * 0.86, h * 0.14, w * 0.085, '#5a3720');
+  } else if (f.scene === 'pet') {
+    ctx.fillStyle = '#d9cbb8';
+    ctx.fillRect(0, 0, w, h * 0.6);
+    ctx.fillStyle = '#a98b6b';
+    ctx.fillRect(0, h * 0.6, w, h * 0.4);
+    const cx = w * 0.5, cy = h * 0.62;
+    ellipse(ctx, cx, cy + h * 0.06, w * 0.28, h * 0.12, '#c8894a');
+    circle(ctx, cx, cy - h * 0.1, w * 0.17, '#cf9455');
+    ellipse(ctx, cx - w * 0.15, cy - h * 0.12, w * 0.06, h * 0.07, '#8a5a2e', 0.3);
+    ellipse(ctx, cx + w * 0.15, cy - h * 0.12, w * 0.06, h * 0.07, '#8a5a2e', -0.3);
+    circle(ctx, cx - w * 0.06, cy - h * 0.12, w * 0.022, '#1d1a17');
+    circle(ctx, cx + w * 0.06, cy - h * 0.12, w * 0.022, '#1d1a17');
+    ellipse(ctx, cx, cy - h * 0.07, w * 0.035, w * 0.025, '#2a211b');
+  } else if (f.scene === 'city') {
+    ctx.fillStyle = vgrad(ctx, 0, h, ['#8fbbe0', '#d6e6f2']);
+    ctx.fillRect(0, 0, w, h);
+    buildings(ctx, w, h, 0.86, ['#8d96a3', '#a9a397', '#76808c', '#b7b0a2'], '#d9e8f5', 0.5);
+    ctx.fillStyle = '#5b5f66';
+    ctx.fillRect(0, h * 0.86, w, h * 0.14);
+  } else if (f.scene === 'night') {
+    ctx.fillStyle = vgrad(ctx, 0, h, ['#05070f', '#121831']);
+    ctx.fillRect(0, 0, w, h);
+    buildings(ctx, w, h, 0.9, ['#0b0e1c', '#0f1324', '#090b16'], '#f3c76b', 0.22);
+    ctx.fillStyle = '#07080d';
+    ctx.fillRect(0, h * 0.9, w, h * 0.1);
+  } else if (f.scene === 'sunset') {
+    const hy = f.horizonY * h;
+    ctx.fillStyle = vgrad(ctx, 0, hy, ['#d8643a', '#f39a4c', '#f8c77a']);
+    ctx.fillRect(0, 0, w, hy + 1);
+    circle(ctx, w * 0.62, hy - h * 0.045, w * 0.07, '#fff1c9');
+    ctx.fillStyle = '#2a2130';
+    ctx.fillRect(0, hy, w, h - hy);
+  }
+}
+
 function paintFigure(ctx, w, h, lm, s) {
   const X = (p) => p.x * w, Y = (p) => p.y * h;
   const lw = s * h * 0.07;

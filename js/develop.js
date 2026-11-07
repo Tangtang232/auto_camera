@@ -1,5 +1,10 @@
-// 拍后自动出片: automatic correction plus one of three looks, all built from parameters
+// 拍后自动出片: automatic correction plus a look, all built from parameters
 // (no third-party LUT files). Works on raw RGBA arrays so it runs in a worker and in tests.
+//
+// Style fields: exposure, contrast, saturation, warmth, fade (all roughly -0.2..0.2),
+// shadowTint / highlightTint ([r, g, b] added in shadows / highlights), grain,
+// wb (how much of the automatic white balance to apply, default 1: a sunset should stay warm),
+// shoulder (0..1, rolls off the brightest tones so they don't clip).
 
 export const STYLES = {
   clear: {
@@ -14,9 +19,34 @@ export const STYLES = {
     name: '胶片', exposure: 0, contrast: 0.12, saturation: -0.1, warmth: 0.03, fade: 0.07,
     shadowTint: [-0.02, 0.014, 0.03], highlightTint: [0.04, 0.014, -0.026], grain: 0.035,
   },
+  // Scene looks, picked automatically by pickStyle().
+  food: {
+    name: '美食', exposure: 0.06, contrast: 0.1, saturation: 0.16, warmth: 0.05, fade: 0, wb: 0.5,
+    shadowTint: [0.01, 0.004, -0.006], highlightTint: [0.02, 0.01, -0.01], grain: 0,
+  },
+  pet: {
+    name: '萌宠', exposure: 0.08, contrast: -0.04, saturation: 0.04, warmth: 0.04, fade: 0.02,
+    shadowTint: [0.008, 0.004, 0], highlightTint: [0.02, 0.012, 0], grain: 0,
+  },
+  city: {
+    name: '城市', exposure: 0.02, contrast: 0.12, saturation: -0.08, warmth: -0.04, fade: 0.02,
+    shadowTint: [-0.012, 0.004, 0.02], highlightTint: [0.01, 0.006, 0], grain: 0,
+  },
+  night: {
+    name: '夜景', exposure: 0.04, contrast: 0.1, saturation: -0.04, warmth: -0.02, fade: 0, wb: 0.3, shoulder: 0.5,
+    shadowTint: [-0.01, 0.006, 0.024], highlightTint: [0.03, 0.014, -0.012], grain: 0,
+  },
+  sunset: {
+    name: '日落', exposure: 0, contrast: 0.06, saturation: 0.1, warmth: 0.07, fade: 0.02, wb: 0, shoulder: 0.6,
+    shadowTint: [0.01, -0.004, 0.012], highlightTint: [0.04, 0.016, -0.02], grain: 0,
+  },
 };
 export const STYLE_KEYS = ['original', 'clear', 'cream', 'film'];
-export const STYLE_NAMES = { original: '原图', clear: '清透', cream: '奶油', film: '胶片' };
+export const STYLE_NAMES = {
+  original: '原图', clear: '清透', cream: '奶油', film: '胶片',
+  food: '美食', pet: '萌宠', city: '城市', night: '夜景', sunset: '日落',
+};
+const BY_SCENE = { person: 'cream', food: 'food', pet: 'pet', city: 'city', night: 'night', sunset: 'sunset' };
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -39,19 +69,20 @@ export function measureTone(data, step = 4) {
   return { lo: pct(0.005), hi: pct(0.995), mean: [r / 255, g / 255, b / 255], luma: (0.299 * r + 0.587 * g + 0.114 * b) / 255, warm: r / Math.max(b, 1) };
 }
 
-// Gentle automatic correction: levels (capped), gray-world white balance (±10%), mid-tone gamma.
-export function autoParams(t) {
+// Gentle automatic correction: levels (capped), gray-world white balance (±10%, scaled by wb),
+// mid-tone gamma.
+export function autoParams(t, wb = 1) {
   const black = Math.min(t.lo, 0.15);
   const white = Math.max(t.hi, 0.82);
   const gray = (t.mean[0] + t.mean[1] + t.mean[2]) / 3;
-  const gains = t.mean.map((m) => Math.min(1.1, Math.max(0.9, gray / Math.max(m, 0.01))));
+  const gains = t.mean.map((m) => 1 + (Math.min(1.1, Math.max(0.9, gray / Math.max(m, 0.01))) - 1) * wb);
   const leveled = clamp01((t.luma - black) / (white - black));
   const gamma = leveled > 0.02 ? Math.min(1.25, Math.max(0.8, Math.log(0.46) / Math.log(leveled))) : 1;
   return { black, white, gains, gamma };
 }
 
 export function pickStyle(scene, tone) {
-  if (scene === 'person') return 'cream';
+  if (BY_SCENE[scene]) return BY_SCENE[scene];
   if (tone.warm > 1.18) return 'film';
   return 'clear';
 }
@@ -69,6 +100,7 @@ export function buildCurves(auto, style) {
       v = v ** auto.gamma;
       v = 1 - (1 - v) ** (1 + s.exposure * 2);
       v = clamp01(v + s.contrast * (v - 0.5) * 4 * v * (1 - v));
+      if (s.shoulder && v > 0.6) { const t = (v - 0.6) / 0.4; v -= s.shoulder * 0.12 * t * t; }
       v = clamp01(v * warm[c]);
       v = s.fade + v * (1 - s.fade);
       lut[i] = Math.round(v * 255);
@@ -81,7 +113,7 @@ export function planDevelop(tone, styleKey) {
   if (styleKey === 'original') return null;
   const style = STYLES[styleKey] || STYLES.clear;
   return {
-    curves: buildCurves(autoParams(tone), style),
+    curves: buildCurves(autoParams(tone, style.wb ?? 1), style),
     saturation: style.saturation,
     shadowTint: style.shadowTint,
     highlightTint: style.highlightTint,
@@ -126,4 +158,85 @@ export function develop(data, plan, seed = 7) {
     data[i] = r; data[i + 1] = g; data[i + 2] = b; // Uint8ClampedArray clamps and rounds
   }
   return data;
+}
+
+// Box blur in place, `passes` times (two passes look close to a Gaussian). Edges clamp.
+function boxBlur(a, w, h, r, passes = 2) {
+  const line = new Float32Array(Math.max(w, h));
+  const d = 2 * r + 1;
+  for (let p = 0; p < passes; p++) {
+    for (let y = 0; y < h; y++) {
+      const o = y * w;
+      let s = 0;
+      for (let i = -r; i <= r; i++) s += a[o + Math.min(w - 1, Math.max(0, i))];
+      for (let x = 0; x < w; x++) {
+        line[x] = s / d;
+        s += a[o + Math.min(w - 1, x + r + 1)] - a[o + Math.max(0, x - r)];
+      }
+      for (let x = 0; x < w; x++) a[o + x] = line[x];
+    }
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let i = -r; i <= r; i++) s += a[Math.min(h - 1, Math.max(0, i)) * w + x];
+      for (let y = 0; y < h; y++) {
+        line[y] = s / d;
+        s += a[Math.min(h - 1, y + r + 1) * w + x] - a[Math.max(0, y - r) * w + x];
+      }
+      for (let y = 0; y < h; y++) a[y * w + x] = line[y];
+    }
+  }
+}
+
+// Night shots: smooth only the color (chroma) channels. Color blotches go away,
+// brightness and detail stay as they were.
+export function chromaDenoise(data, w, h, r = 2) {
+  const n = w * h;
+  const Y = new Float32Array(n), cb = new Float32Array(n), cr = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const R = data[i * 4], G = data[i * 4 + 1], B = data[i * 4 + 2];
+    const y = 0.299 * R + 0.587 * G + 0.114 * B;
+    Y[i] = y; cb[i] = B - y; cr[i] = R - y;
+  }
+  boxBlur(cb, w, h, r);
+  boxBlur(cr, w, h, r);
+  for (let i = 0; i < n; i++) {
+    const R = Y[i] + cr[i], B = Y[i] + cb[i];
+    data[i * 4] = R;
+    data[i * 4 + 1] = (Y[i] - 0.299 * R - 0.114 * B) / 0.587;
+    data[i * 4 + 2] = B;
+  }
+  return data;
+}
+
+// Backlit portrait: brighten the face with a soft oval, leave the rest alone.
+// face: normalized {x0, y0, x1, y1} in this image. Returns true if anything changed.
+export function fillLight(data, w, h, face) {
+  if (!face) return false;
+  const luma = (i) => (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
+  const fx0 = Math.max(0, Math.floor(face.x0 * w)), fx1 = Math.min(w, Math.ceil(face.x1 * w));
+  const fy0 = Math.max(0, Math.floor(face.y0 * h)), fy1 = Math.min(h, Math.ceil(face.y1 * h));
+  if (fx1 - fx0 < 2 || fy1 - fy0 < 2) return false;
+  let fs = 0, fn = 0, all = 0, an = 0;
+  for (let y = fy0; y < fy1; y++) for (let x = fx0; x < fx1; x++) { fs += luma((y * w + x) * 4); fn++; }
+  for (let i = 0; i < data.length; i += 4 * 16) { all += luma(i); an++; }
+  const faceL = fs / fn, meanL = all / an;
+  if (!(faceL < 0.4 && meanL - faceL > 0.1)) return false;
+  const amount = Math.min(0.45, Math.max(0.15, (meanL - faceL) * 1.5));
+  const cx = (fx0 + fx1) / 2, cy = (fy0 + fy1) / 2;
+  const rx = (fx1 - fx0) * 0.9, ry = (fy1 - fy0) * 0.9; // oval reaches about twice the face size
+  const x0 = Math.max(0, Math.floor(cx - rx)), x1 = Math.min(w, Math.ceil(cx + rx));
+  const y0 = Math.max(0, Math.floor(cy - ry)), y1 = Math.min(h, Math.ceil(cy + ry));
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const d = Math.hypot((x - cx) / rx, (y - cy) / ry);
+      if (d >= 1) continue;
+      const t = d < 0.5 ? 1 : 1 - (d - 0.5) / 0.5;
+      const wgt = t * t * (3 - 2 * t);
+      const i = (y * w + x) * 4;
+      const l = Math.max(luma(i), 1 / 255);
+      const k = Math.min(3, l ** (1 - amount * wgt) / l);
+      data[i] *= k; data[i + 1] *= k; data[i + 2] *= k;
+    }
+  }
+  return true;
 }

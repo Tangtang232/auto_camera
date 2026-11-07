@@ -1,7 +1,7 @@
 // Offline support. App files: network first, cache as fallback (so updates show up).
 // AI library and model: cache first; their URLs are versioned, so they never change.
 
-const APP_CACHE = 'paihao-app-v2';
+const APP_CACHE = 'paihao-app-v3';
 const CDN_CACHE = 'paihao-cdn-v1';
 const MODEL_CACHE = 'paihao-models-v1'; // large, versioned by file name: fetched once
 const KEEP = [APP_CACHE, CDN_CACHE, MODEL_CACHE];
@@ -21,6 +21,9 @@ const APP_FILES = [
   'js/frame.js',
   'js/develop.js',
   'js/ai-worker.js',
+  'js/scene.js',
+  'js/classify.js',
+  'js/perspective.js',
   'manifest.webmanifest',
   'icons/icon-180.png',
   'icons/icon-192.png',

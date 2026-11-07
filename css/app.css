@@ -542,16 +542,21 @@ h2 { margin: 0; text-wrap: balance; }
   font-weight: 600;
 }
 .viewer-busy { left: auto; right: 10px; color: var(--accent); }
-.chips { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.chips { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
 .chips button {
-  height: 40px;
+  min-height: 44px;
+  padding: 2px 4px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.09);
   font-size: 14px;
   font-weight: 600;
+  line-height: 1.15;
   color: var(--muted);
 }
+.chips button small { display: block; font-size: 10.5px; font-weight: 500; opacity: 0.85; }
+.chips button small:empty { display: none; }
 .chips button[aria-checked="true"] { background: var(--accent); color: var(--on-accent); }
+.scene-list { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding-bottom: 4px; }
 .badge-ai { color: var(--muted); font-weight: 500; }
 
 .legend { margin: 0; display: grid; gap: 14px; overflow-y: auto; }

@@ -26,8 +26,9 @@ function run(mode, work) {
   }));
 }
 
-const plain = ({ id, blob, ts, w, h, saved, processed, look, keep }) => ({
+const plain = ({ id, blob, ts, w, h, saved, processed, look, keep, scene, elev, face, lowLight }) => ({
   id, blob, ts, w, h, saved: !!saved, processed: processed || null, look: look || null, keep: keep || null,
+  scene: scene || null, elev: elev ?? null, face: face || null, lowLight: !!lowLight,
 });
 
 export const putPhoto = (p) => run('readwrite', (s) => s.put(plain(p)));

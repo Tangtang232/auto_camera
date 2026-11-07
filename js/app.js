@@ -4,10 +4,12 @@ import { coverCrop, SHOT_NAME, clamp, personGeometry } from './geom.js';
 import { analyze, findHorizon, finish } from './guide.js';
 import { prepareReference, compareToReference, compareScene, alignImages, grayOf, boneLimb } from './match.js';
 import { drawOverlay, COLOR, scoreColor } from './draw.js';
-import { demoFrame, paintDemo, demoPose, DEMO_FINAL } from './demo.js';
-import { measureLight } from './light.js';
+import { demoFrame, paintDemo, demoPose, DEMO_FINAL, DEMO_SCENES, demoSceneFrame, paintSceneDemo } from './demo.js';
+import { measureLight, faceBox } from './light.js';
 import { bestBox, boxesContaining } from './frame.js';
 import { STYLE_NAMES } from './develop.js';
+import { SCENE_NAME, PICKABLE, freshScene, addClassification, stepScene, cameraElevation, flatDeviation } from './scene.js';
+import * as classifier from './classify.js';
 import * as pose from './pose.js';
 import * as store from './store.js';
 
@@ -28,7 +30,8 @@ const el = {
   sheet: $('sheet'), sheetClose: $('sheetClose'), grid: $('grid'), sheetEmpty: $('sheetEmpty'),
   saveBtn: $('saveBtn'), delBtn: $('delBtn'), keepOriginal: $('keepOriginal'), aiBadge: $('aiBadge'),
   viewer: $('viewer'), viewerClose: $('viewerClose'), viewerImg: $('viewerImg'), viewerBadge: $('viewerBadge'),
-  viewerBusy: $('viewerBusy'), styleChips: $('styleChips'), cropToggle: $('cropToggle'),
+  viewerBusy: $('viewerBusy'), styleChips: $('styleChips'), cropToggle: $('cropToggle'), recName: $('recName'),
+  scenePicker: $('scenePicker'), scenePickerClose: $('scenePickerClose'), sceneList: $('sceneList'),
   help: $('help'), helpClose: $('helpClose'), toast: $('toast'), hapticLabel: $('hapticLabel'),
 };
 
@@ -67,6 +70,14 @@ const state = {
   tilt: null,
   tiltAt: 0,
   motionOn: false,
+  sideways: false, // phone held in landscape (from gravity)
+  orient: null, // {beta, gamma, at} from deviceorientation
+  shake: null, // smoothed rotation speed, deg/s
+  shakeAt: 0,
+  scene: freshScene(), // classifier groups + light flags + the settled scene kind
+  override: null, // a scene picked by hand from the badge, this session only
+  classAt: 0,
+  demoScene: DEMO_SCENES.includes(params.get('scene')) ? params.get('scene') : null,
   horizon: null,
   horizonAt: 0,
   light: null,
@@ -212,6 +223,8 @@ async function loadModel() {
   try {
     await pose.loadPose();
     state.poseState = 'ready';
+    // The scene classifier comes after the pose model, so the first download isn't split.
+    classifier.loadClassifier().catch((err) => console.warn('scene classifier unavailable', err));
   } catch (e) {
     console.error(e);
     state.poseState = 'failed';
@@ -304,15 +317,41 @@ function maybeScoreFrame(now) {
 
 const currentAiPick = () => (state.aiPick && performance.now() - state.aiAt < 3000 ? state.aiPick : null);
 
-/* ---------- level (motion sensor) ---------- */
+// About once a second, ask the classifier what kind of scene this is (food, pet, city…).
+const DEMO_LABELS = {
+  food: [{ index: 963, score: 0.82 }],
+  pet: [{ index: 207, score: 0.78 }],
+  city: [{ index: 497, score: 0.45 }, { index: 919, score: 0.25 }],
+};
+function maybeClassify(now) {
+  if (state.mode !== 'guide' || now - state.classAt < 1000) return;
+  if (state.demo) {
+    state.classAt = now;
+    addClassification(state.scene, DEMO_LABELS[state.demoScene] || []);
+    return;
+  }
+  if (!classifier.classifierReady()) return;
+  state.classAt = now;
+  try {
+    const cats = classifier.classify(ana);
+    if (cats) addClassification(state.scene, cats);
+  } catch (err) { console.warn('classify', err); }
+}
+
+/* ---------- level, angle and steadiness (motion sensors) ---------- */
+
+function listenMotion(orientation = true) {
+  addEventListener('devicemotion', onMotion);
+  if (orientation) addEventListener('deviceorientation', onOrientation);
+  state.motionOn = true;
+}
 
 function initMotion() {
   if (typeof DeviceMotionEvent === 'undefined') return;
   if (typeof DeviceMotionEvent.requestPermission === 'function') {
     el.motionChip.hidden = false; // iOS asks only from a tap
   } else {
-    addEventListener('devicemotion', onMotion);
-    state.motionOn = true;
+    listenMotion();
   }
 }
 
@@ -320,22 +359,42 @@ async function requestMotion() {
   el.motionChip.hidden = true;
   if (state.motionOn) return;
   try {
-    const r = await DeviceMotionEvent.requestPermission();
-    if (r === 'granted') {
-      addEventListener('devicemotion', onMotion);
-      state.motionOn = true;
+    // Both requests start inside the same tap; iOS shows one prompt for motion and orientation.
+    const DO = typeof DeviceOrientationEvent !== 'undefined' ? DeviceOrientationEvent : null;
+    const asks = [DeviceMotionEvent.requestPermission()];
+    if (DO && typeof DO.requestPermission === 'function') asks.push(DO.requestPermission().catch(() => 'denied'));
+    const [motion, orientation = motion] = await Promise.all(asks);
+    if (motion === 'granted') {
+      listenMotion(orientation === 'granted');
     } else {
-      toast('不开水平仪也能拍，只是少了“拿正”的提示');
+      toast('不开水平仪也能拍，只是少了“拿正”和角度提示');
     }
   } catch { /* refused or not from a tap */ }
 }
 
+function onOrientation(e) {
+  if (e.beta == null || e.gamma == null) return;
+  const p = state.orient;
+  const k = 0.3;
+  state.orient = p && performance.now() - p.at < 500
+    ? { beta: p.beta + (e.beta - p.beta) * k, gamma: p.gamma + (e.gamma - p.gamma) * k, at: performance.now() }
+    : { beta: e.beta, gamma: e.gamma, at: performance.now() };
+}
+
 function onMotion(e) {
+  const rr = e.rotationRate;
+  if (rr && rr.alpha != null) {
+    const m = Math.hypot(rr.alpha || 0, rr.beta || 0, rr.gamma || 0);
+    state.shake = state.shake == null ? m : state.shake + (m - state.shake) * 0.15;
+    state.shakeAt = performance.now();
+  }
   const a = e.accelerationIncludingGravity;
   if (!a || a.x == null || a.y == null) return;
   const g = Math.hypot(a.x, a.y, a.z || 0) || 9.8;
   state.tiltAt = performance.now();
-  if (Math.abs(a.z || 0) / g > 0.8) { state.tilt = null; return; } // lying flat: no horizon to level
+  const flat = Math.abs(a.z || 0) / g > 0.8;
+  state.sideways = !flat && Math.abs(a.x) > Math.abs(a.y);
+  if (flat) { state.tilt = null; return; } // lying flat: no horizon to level
   // Rotation in the screen plane; deviation from the nearest upright/sideways position.
   // Works whichever sign convention the browser uses for gravity.
   const th = (Math.atan2(-a.x, a.y) * 180) / Math.PI;
@@ -346,6 +405,26 @@ function onMotion(e) {
 function currentTilt() {
   if (state.demo) return state.demoNow ? state.demoNow.tilt : null;
   return performance.now() - state.tiltAt < 1500 ? state.tilt : null;
+}
+
+// Camera angle and steadiness right now: {elev, flatDev, shake}, each null when unknown.
+function sensorContext() {
+  if (state.demo) {
+    const s = state.demoNow && state.demoNow.sensors;
+    return { elev: null, flatDev: null, shake: null, ...s };
+  }
+  const now = performance.now();
+  const o = state.orient && now - state.orient.at < 1500 ? state.orient : null;
+  const elev = o ? cameraElevation(o.beta, state.sideways) : null;
+  const flatDev = elev != null && elev < -70 ? flatDeviation(o.beta, o.gamma) : null;
+  const shake = now - state.shakeAt < 1500 ? state.shake : null;
+  return { elev, flatDev, shake };
+}
+
+function sceneContext(now) {
+  const warmHorizon = !!(state.horizon && state.horizon.y != null && state.horizon.warm);
+  const kind = stepScene(state.scene, state.light, now, 1000, warmHorizon);
+  return { override: state.override, kind, lowLight: state.scene.lowLight, sunset: state.scene.sunset, ...sensorContext() };
 }
 
 /* ---------- frame loop ---------- */
@@ -378,10 +457,13 @@ function sampleSmall(now) {
   const m = measureLight(img, state.lm);
   const p = state.light;
   const k = 0.35;
+  const mix = (a, b) => a + (b - a) * k;
   state.light = !p ? m : {
-    mean: p.mean + (m.mean - p.mean) * k,
-    clip: p.clip + (m.clip - p.clip) * k,
-    face: m.face == null ? null : p.face == null ? m.face : p.face + (m.face - p.face) * k,
+    mean: mix(p.mean, m.mean),
+    clip: mix(p.clip, m.clip),
+    face: m.face == null ? null : p.face == null ? m.face : mix(p.face, m.face),
+    top: p.top.map((v, i) => mix(v, m.top[i])),
+    bottom: mix(p.bottom, m.bottom),
   };
   const d = state.ref && state.ref.data;
   if (state.mode === 'match' && d && !d.prep && d.gray && d.w === small.width && d.h === small.height) {
@@ -406,6 +488,7 @@ function evaluate() {
       horizon: state.lm ? null : state.horizon,
       light: state.light,
       frame: currentAiPick(),
+      context: sceneContext(performance.now()),
     }),
   };
 }
@@ -414,8 +497,14 @@ function loop(now) {
   requestAnimationFrame(loop);
   state.frame++;
   if (state.demo) {
-    state.demoNow = demoFrame((now - state.demoStart) / 1000, state.aspect);
-    paintDemo(dctx, el.demo.width, el.demo.height, state.demoNow);
+    const t = (now - state.demoStart) / 1000;
+    if (state.demoScene) {
+      state.demoNow = demoSceneFrame(state.demoScene, t);
+      paintSceneDemo(dctx, el.demo.width, el.demo.height, state.demoNow);
+    } else {
+      state.demoNow = demoFrame(t, state.aspect);
+      paintDemo(dctx, el.demo.width, el.demo.height, state.demoNow);
+    }
   }
   const src = sourceInfo();
   if (!src) {
@@ -441,6 +530,7 @@ function loop(now) {
 
   if (state.frame % 5 === 0) sampleSmall(now);
   maybeScoreFrame(now);
+  maybeClassify(now);
   present(evaluate(), now);
 }
 
@@ -459,7 +549,7 @@ function idleHint(result) {
     return { id: 'idle', level: 'idle', text: '慢慢对齐参考图', why: result.similarity != null ? `现在 ${pct(result.similarity)}% 像` : '' };
   }
   if (!state.demo && state.poseState === 'loading') {
-    return { id: 'idle', level: 'idle', text: 'AI 正在准备', why: '第一次打开要下载约 6 MB 的模型' };
+    return { id: 'idle', level: 'idle', text: 'AI 正在准备', why: '第一次打开要下载 AI 模型，建议连 Wi-Fi' };
   }
   return { id: 'idle', level: 'idle', text: '对准要拍的人或风景', why: '' };
 }
@@ -560,10 +650,12 @@ function present(result, now) {
     else if (state.ref.data && !state.ref.data.prep) { badge = '照着拍 · 对齐构图'; level = tone; }
     else { badge = '照着拍 · 对齐姿势'; level = tone; }
   } else if (!state.demo && state.poseState !== 'ready') badge = 'AI 加载中…';
-  else if (result.scene === 'person') { badge = `人像 · ${SHOT_NAME[result.person.shot]}`; level = tone; }
-  else if (result.scene === 'landscape') { badge = '风景'; level = tone; }
-  else if (result.scene === 'still') { badge = '景物'; level = tone; }
-  else badge = '寻找拍摄对象';
+  else {
+    if (result.scene === 'person') { badge = `人像 · ${SHOT_NAME[result.person.shot]}`; level = tone; }
+    else if (SCENE_NAME[result.scene]) { badge = SCENE_NAME[result.scene]; level = tone; }
+    else badge = '寻找拍摄对象';
+    if (state.override) badge += ' · 手动';
+  }
   if (badge + level !== lastBadge) {
     lastBadge = badge + level;
     el.sceneText.textContent = badge;
@@ -587,7 +679,7 @@ function present(result, now) {
     }
     : () => toneColor;
   let horizon = null;
-  if (result.kind === 'guide' && result.scene === 'landscape' && state.horizon && state.horizon.y != null) {
+  if (result.kind === 'guide' && (result.scene === 'landscape' || result.scene === 'sunset') && state.horizon && state.horizon.y != null) {
     horizon = { y: state.horizon.y, target: cur && cur.horizon ? cur.horizon.target : null };
   }
   const pick = result.kind === 'guide' ? currentAiPick() : null;
@@ -634,14 +726,20 @@ function dropUrls(id) {
 }
 
 // Crop, correct and style a photo in the worker. style: 'auto' or a key from STYLE_NAMES.
+// Uses the scene, angle and face recorded at capture, so restyling later gives the same base.
 async function processPhoto(photo, style, crop) {
   photo.busy = true;
   refreshPhoto(photo);
   try {
-    const scene = state.lastResult ? state.lastResult.scene : 'none';
-    const r = await aiCall('develop', { blob: photo.blob, style, crop, scene, keep: photo.keep || null });
+    const scene = photo.scene || (state.lastResult ? state.lastResult.scene : 'none');
+    const r = await aiCall('develop', {
+      blob: photo.blob, style, crop, scene, keep: photo.keep || null,
+      elev: photo.elev ?? null, face: photo.face || null, lowLight: !!photo.lowLight,
+    });
+    const auto = style === 'auto';
+    const rec = auto ? r.style : photo.look && photo.look.rec;
     photo.processed = r.blob;
-    photo.look = { style: r.style, crop: !!crop, cropBox: r.crop };
+    photo.look = { style: r.style, auto, rec, crop: !!crop, cropBox: r.crop, straight: !!r.straight };
     photo.saved = false;
   } catch (err) {
     console.warn('develop failed', err);
@@ -674,11 +772,17 @@ async function capture() {
   el.flash.classList.remove('on');
   void el.flash.offsetWidth;
   el.flash.classList.add('on');
+  // What was in front of the camera at the moment of the shot, for scene-aware 出片.
+  const res = state.lastResult;
+  const scene = res && res.scene && res.scene !== 'none' ? res.scene : null;
+  const sensors = sensorContext();
   const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.92));
   if (!blob) { toast('没拍上，再按一次'); return; }
   const photo = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, blob, ts: Date.now(), w: c.width, h: c.height,
     saved: false, keep: personRect(state.lm),
+    scene, elev: sensors.elev, face: scene === 'person' ? faceBox(state.lm, state.aspect) : null,
+    lowLight: !!state.scene.lowLight,
   };
   state.photos.push(photo);
   store.putPhoto(photo).catch(() => {});
@@ -845,11 +949,13 @@ function renderViewer() {
   el.viewerImg.src = displayUrl(p);
   el.viewerBadge.hidden = true;
   el.viewerBusy.hidden = !p.busy;
-  const style = p.look && p.look.style ? p.look.style : 'original';
+  const style = !p.look ? 'original' : p.look.auto ? 'auto' : p.look.style || 'original';
   el.styleChips.querySelectorAll('[data-style]').forEach((b) => {
     b.setAttribute('aria-checked', String(b.dataset.style === style));
     b.disabled = !!p.busy;
   });
+  const rec = p.look && p.look.rec;
+  el.recName.textContent = rec ? STYLE_NAMES[rec] : '';
   el.cropToggle.checked = p.look ? !!p.look.crop : prefs.get('aiCrop', true);
   el.cropToggle.disabled = !!p.busy;
 }
@@ -870,6 +976,29 @@ function peekOriginal(on) {
   } else {
     renderViewer();
   }
+}
+
+/* ---------- scene picker (tap the badge) ---------- */
+
+function openScenePicker() {
+  const cur = state.override || 'auto';
+  el.sceneList.replaceChildren(...PICKABLE.map((k) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.dataset.scene = k;
+    b.textContent = k === 'auto' ? '自动识别' : SCENE_NAME[k];
+    b.setAttribute('aria-checked', String(k === cur));
+    return b;
+  }));
+  el.scenePicker.hidden = false;
+}
+
+function pickScene(k) {
+  state.override = k === 'auto' ? null : k;
+  state.stab = freshStab();
+  el.scenePicker.hidden = true;
+  toast(k === 'auto' ? '按画面自动识别场景' : `按「${SCENE_NAME[k]}」来引导和出片，这次打开有效`, 2200);
 }
 
 /* ---------- 照着拍 reference ---------- */
@@ -1041,6 +1170,7 @@ function bindUI() {
     state.lm = null;
     state.rawLm = null;
     state.aiPick = null;
+    state.scene = freshScene();
     state.stab = freshStab();
     startCamera();
     renderRefUI();
@@ -1078,7 +1208,7 @@ function bindUI() {
   el.cropToggle.addEventListener('change', () => {
     prefs.set('aiCrop', el.cropToggle.checked);
     const p = state.viewing;
-    if (p) restyle(p.look && p.look.style ? p.look.style : 'auto');
+    if (p) restyle(!p.look || p.look.auto ? 'auto' : p.look.style || 'auto');
   });
   el.viewerImg.addEventListener('pointerdown', () => peekOriginal(true));
   for (const t of ['pointerup', 'pointercancel', 'pointerleave']) {
@@ -1108,12 +1238,19 @@ function bindUI() {
   el.motionChip.addEventListener('click', requestMotion);
   el.vf.addEventListener('click', () => { if (!el.motionChip.hidden) requestMotion(); });
   el.sceneBadge.addEventListener('click', () => {
-    if (state.poseState === 'failed') { state.poseState = 'idle'; loadModel(); }
+    if (state.poseState === 'failed') { state.poseState = 'idle'; loadModel(); return; }
+    if (state.mode === 'guide') openScenePicker();
+  });
+  el.scenePickerClose.addEventListener('click', () => { el.scenePicker.hidden = true; });
+  el.scenePicker.addEventListener('click', (e) => { if (e.target === el.scenePicker) el.scenePicker.hidden = true; });
+  el.sceneList.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-scene]');
+    if (b) pickScene(b.dataset.scene);
   });
   el.camRetry.addEventListener('click', startCamera);
   el.camDemo.addEventListener('click', startDemo);
   addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && el.sheet.hidden && el.help.hidden && el.viewer.hidden && e.target === document.body) {
+    if (e.code === 'Space' && el.sheet.hidden && el.help.hidden && el.viewer.hidden && el.scenePicker.hidden && e.target === document.body) {
       e.preventDefault();
       capture();
     }
