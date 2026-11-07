@@ -167,7 +167,13 @@
       <button type="button" role="radio" data-style="moody" aria-checked="false">暗调</button>
       <button type="button" role="radio" data-style="clear" aria-checked="false">清透</button>
     </div>
-    <label class="toggle"><input id="cropToggle" type="checkbox" checked><span>AI 裁剪构图</span></label>
+    <div class="toggle-row">
+      <label class="toggle"><input id="cropToggle" type="checkbox" checked><span>AI 裁剪构图</span></label>
+      <span id="portraitToggles" class="toggle-group" hidden>
+        <label class="toggle"><input id="bokehToggle" type="checkbox" checked><span>背景虚化</span></label>
+        <label class="toggle"><input id="smoothToggle" type="checkbox" checked><span>磨皮美颜</span></label>
+      </span>
+    </div>
   </div>
 </section>
 
@@ -203,6 +209,7 @@
     </dl>
     <p class="help-note">「照着拍」里有出片模板：选一个，照着半透明人形和虚线摆姿势，左上角的「要点」写着怎么摆、手机怎么拿，拍完自动套上配套的色调。也可以从相册选一张喜欢的照片，照着它的姿势拍，颜色也会往它靠。</p>
     <p class="help-note">左上角显示 AI 认出的场景：人像、美食、宠物、城市、夜景、日落、风景。不同场景给不同的引导，比如美食从斜上方拍，宠物蹲下来平视，楼房别仰着拍。认错了就点它手动选。</p>
+    <p class="help-note">人像照片拍完会自动做背景虚化和轻度磨皮（AI 把人和皮肤从画面里分出来），在相册里点照片可以分别关掉。第一次给人拍照前会多下载约 16 MB 的分割模型。</p>
     <p class="help-note">拍完会自动裁剪、校正曝光和白平衡，并套上适合场景的风格：城市照片会把仰拍歪掉的楼拉直一点，夜景会去掉彩色噪点，逆光人像会把脸提亮。在相册里点照片可以换风格。识别和处理都在手机上完成，画面和照片不会上传。</p>
   </div>
 </section>

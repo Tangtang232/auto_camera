@@ -6,6 +6,7 @@
 import { bestBox, boxesContaining } from './frame.js';
 import { measureTone, pickStyle, planDevelop, develop, chromaDenoise, fillLight, colorTransfer } from './develop.js';
 import { correctVertical, shouldCorrect } from './perspective.js';
+import { cropMask, personAlpha, smoothSkin, bokeh } from './portrait.js';
 
 const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 const MODEL = new URL('../models/gaic_mobilenetv2.onnx', import.meta.url).href;
@@ -62,8 +63,12 @@ function intoCrop(b, crop) {
 // face: the face box for fill light; lowLight: shot in dim light.
 // look: the template's color look; refColor: color statistics of a 照着拍 reference photo
 // (照着调色). With style 'auto' these win over the scene's look.
+// seg: {w, h, person, skin} masks from segment.js; portrait: {bokeh, smooth} switches.
 // style 'original' only crops: no straightening, denoising or color changes.
-async function developPhoto({ blob, style, crop, scene, keep, elev = null, face = null, lowLight = false, look = null, refColor = null }) {
+async function developPhoto({
+  blob, style, crop, scene, keep, elev = null, face = null, lowLight = false, look = null, refColor = null,
+  seg = null, portrait = null,
+}) {
   const bmp = await createImageBitmap(blob);
   const original = style === 'original';
   let base = bmp;
@@ -110,6 +115,16 @@ async function developPhoto({ blob, style, crop, scene, keep, elev = null, face 
   let changed = false;
   if (!original) {
     if (scene === 'person' && fillLight(img.data, sw, sh, intoCrop(face, box))) changed = true;
+    // 人像后期: masks were made on the uncropped photo, so sample them through the crop box.
+    if (seg && portrait && !straight) {
+      if (portrait.smooth && smoothSkin(img.data, sw, sh, cropMask(seg.skin, seg.w, seg.h, box, sw, sh))) changed = true;
+      if (portrait.bokeh) {
+        const alpha = personAlpha(img.data, sw, sh, seg.person, seg.w, seg.h, box);
+        const feet = keep && keep.y1 < 0.97 ? (box ? (keep.y1 - box.y) / box.h : keep.y1) : null;
+        bokeh(img.data, sw, sh, alpha, { feet });
+        changed = true;
+      }
+    }
     if (scene === 'night' || lowLight) {
       chromaDenoise(img.data, sw, sh, Math.max(2, Math.round(Math.min(sw, sh) / 400)));
       changed = true;

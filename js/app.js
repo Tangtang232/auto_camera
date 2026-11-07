@@ -12,6 +12,7 @@ import { GROUPS, TEMPLATES, templateById, templatePose, cameraHint } from './tem
 import { templateCard, silhouette } from './figure.js';
 import { SCENE_NAME, PICKABLE, freshScene, addClassification, stepScene, cameraElevation, flatDeviation } from './scene.js';
 import * as classifier from './classify.js';
+import * as segment from './segment.js';
 import * as pose from './pose.js';
 import * as store from './store.js';
 
@@ -34,6 +35,7 @@ const el = {
   saveBtn: $('saveBtn'), delBtn: $('delBtn'), keepOriginal: $('keepOriginal'), aiBadge: $('aiBadge'),
   viewer: $('viewer'), viewerClose: $('viewerClose'), viewerImg: $('viewerImg'), viewerBadge: $('viewerBadge'),
   viewerBusy: $('viewerBusy'), styleChips: $('styleChips'), cropToggle: $('cropToggle'), recName: $('recName'),
+  portraitToggles: $('portraitToggles'), bokehToggle: $('bokehToggle'), smoothToggle: $('smoothToggle'),
   scenePicker: $('scenePicker'), scenePickerClose: $('scenePickerClose'), sceneList: $('sceneList'),
   help: $('help'), helpClose: $('helpClose'), toast: $('toast'), hapticLabel: $('hapticLabel'),
 };
@@ -538,6 +540,11 @@ function loop(now) {
   }
   state.rawLm = raw;
   state.lm = smooth(state.lm, raw, now);
+  // The first time a person shows up, fetch the segmentation model for 人像后期 in the background.
+  if (state.lm && !state.demo && !segment.segmenterReady() && now - segTriedAt > 30000) {
+    segTriedAt = now; // a failed download is retried at most every 30 s
+    segment.loadSegmenter().catch((err) => console.warn('portrait segmentation unavailable', err));
+  }
 
   if (state.frame % 5 === 0) sampleSmall(now);
   maybeScoreFrame(now);
@@ -737,6 +744,25 @@ function dropUrls(id) {
   purls.delete(id);
 }
 
+// 人像后期 masks for a portrait, made from the captured canvas. Waits up to 10 s for the
+// segmentation model on the first shot; without it the photo is still developed, just
+// without background blur and skin smoothing.
+let segTriedAt = -Infinity;
+async function portraitMasks(canvas, lm, figure) {
+  if (state.demo) return segment.demoSegment(lm, figure || 0.8, canvas.width, canvas.height);
+  try {
+    if (!segment.segmenterReady()) {
+      await Promise.race([segment.loadSegmenter(), new Promise((_, no) => setTimeout(() => no(new Error('timeout')), 10000))]);
+    }
+    return segment.segmentPhoto(canvas);
+  } catch (err) {
+    console.warn('portrait masks skipped', err);
+    return null;
+  }
+}
+
+const portraitPrefs = () => ({ bokeh: prefs.get('bokeh', true), smooth: prefs.get('smooth', true) });
+
 // Crop, correct and style a photo in the worker. style: 'auto' or a key from STYLE_NAMES.
 // Uses the scene, angle and face recorded at capture, so restyling later gives the same base.
 async function processPhoto(photo, style, crop) {
@@ -749,6 +775,7 @@ async function processPhoto(photo, style, crop) {
       blob: photo.blob, style, crop, scene, keep: photo.keep || null,
       elev: photo.elev ?? null, face: photo.face || null, lowLight: !!photo.lowLight,
       look: tpl ? tpl.look : null, refColor: photo.refColor || null,
+      seg: photo.seg || null, portrait: photo.seg ? portraitPrefs() : null,
     });
     const auto = style === 'auto';
     const rec = auto ? r.style : photo.look && photo.look.rec;
@@ -786,16 +813,21 @@ async function capture() {
   el.flash.classList.remove('on');
   void el.flash.offsetWidth;
   el.flash.classList.add('on');
-  // What was in front of the camera at the moment of the shot, for scene-aware 出片.
+  // What was in front of the camera at the moment of the shot, for scene-aware 出片. Taken before
+  // any await: the frame loop keeps running while the JPEG encodes, and the person may move.
   const res = state.lastResult;
   const scene = res && res.scene && res.scene !== 'none' ? res.scene : null;
   const sensors = sensorContext();
+  const lm = state.lm;
+  // The demo paints its masks from the figure exactly as drawn (the smoothed pose lags behind it).
+  const demoLm = state.demo ? state.rawLm : null;
+  const figure = state.demoNow ? state.demoNow.s : null;
   const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.92));
   if (!blob) { toast('没拍上，再按一次'); return; }
   const photo = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, blob, ts: Date.now(), w: c.width, h: c.height,
-    saved: false, keep: personRect(state.lm),
-    scene, elev: sensors.elev, face: scene === 'person' ? faceBox(state.lm, state.aspect) : null,
+    saved: false, keep: personRect(lm),
+    scene, elev: sensors.elev, face: scene === 'person' ? faceBox(lm, state.aspect) : null,
     lowLight: !!state.scene.lowLight,
   };
   // 照着拍: a template brings its color look; a photo from the album lends its colors (照着调色).
@@ -805,6 +837,10 @@ async function capture() {
   state.photos.push(photo);
   store.putPhoto(photo).catch(() => {});
   updateThumb(true);
+  if (scene === 'person') {
+    photo.busy = true;
+    photo.seg = await portraitMasks(c, demoLm, figure);
+  }
   processPhoto(photo, 'auto', prefs.get('aiCrop', true));
   if (!prefs.get('firstShotTold', false)) {
     prefs.set('firstShotTold', true);
@@ -976,6 +1012,11 @@ function renderViewer() {
   el.recName.textContent = rec ? STYLE_NAMES[rec] : '';
   el.cropToggle.checked = p.look ? !!p.look.crop : prefs.get('aiCrop', true);
   el.cropToggle.disabled = !!p.busy;
+  el.portraitToggles.hidden = !p.seg;
+  const pp = portraitPrefs();
+  el.bokehToggle.checked = pp.bokeh;
+  el.smoothToggle.checked = pp.smooth;
+  el.bokehToggle.disabled = el.smoothToggle.disabled = !!p.busy;
 }
 
 function restyle(style) {
@@ -1307,6 +1348,13 @@ function bindUI() {
     const b = e.target.closest('[data-style]');
     if (b) restyle(b.dataset.style);
   });
+  for (const [toggle, key] of [[el.bokehToggle, 'bokeh'], [el.smoothToggle, 'smooth']]) {
+    toggle.addEventListener('change', () => {
+      prefs.set(key, toggle.checked);
+      const p = state.viewing;
+      if (p) restyle(!p.look || p.look.auto ? 'auto' : p.look.style || 'auto');
+    });
+  }
   el.cropToggle.addEventListener('change', () => {
     prefs.set('aiCrop', el.cropToggle.checked);
     const p = state.viewing;

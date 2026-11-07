@@ -176,7 +176,8 @@ export function develop(data, plan, seed = 7) {
 }
 
 // Box blur in place, `passes` times (two passes look close to a Gaussian). Edges clamp.
-function boxBlur(a, w, h, r, passes = 2) {
+// One pass is the plain box mean that the guided filter (portrait.js) needs.
+export function boxBlur(a, w, h, r, passes = 2) {
   const line = new Float32Array(Math.max(w, h));
   const d = 2 * r + 1;
   for (let p = 0; p < passes; p++) {

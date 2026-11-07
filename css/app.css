@@ -562,6 +562,9 @@ h2 { margin: 0; text-wrap: balance; }
   cursor: pointer;
 }
 .toggle input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.toggle-row { display: flex; flex-wrap: wrap; column-gap: 18px; }
+.toggle-group { display: flex; flex-wrap: wrap; column-gap: 18px; }
+.toggle-group[hidden] { display: none; }
 
 /* ---------- 出片 viewer ---------- */
 .viewer-panel { max-height: 94%; }

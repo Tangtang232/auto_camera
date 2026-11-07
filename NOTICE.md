@@ -11,4 +11,5 @@
 
 - MediaPipe Tasks Vision（Pose Landmarker 模型）：Apache-2.0，Google。
 - MediaPipe Image Classifier 的 EfficientNet-Lite0（int8，ImageNet 1000 类）：Google 提供，运行时从 Google 的模型存储地址下载，用于识别场景。MediaPipe 文档页没有单独写明这个模型文件的许可证，本仓库不分发这个文件。
+- MediaPipe 多类别人像分割模型（selfie multiclass 256×256）：Google 提供，模型说明标注 Apache-2.0，运行时从 Google 的模型存储地址下载，用于人像后期（背景虚化、磨皮），本仓库不分发这个文件。
 - ONNX Runtime Web：MIT，Microsoft。
