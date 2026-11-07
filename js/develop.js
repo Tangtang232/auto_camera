@@ -19,6 +19,21 @@ export const STYLES = {
     name: '胶片', exposure: 0, contrast: 0.12, saturation: -0.1, warmth: 0.03, fade: 0.07,
     shadowTint: [-0.02, 0.014, 0.03], highlightTint: [0.04, 0.014, -0.026], grain: 0.035,
   },
+  // Portrait looks for templates (and the viewer's style strip).
+  japan: {
+    name: '日系', exposure: 0.1, contrast: -0.12, saturation: -0.12, warmth: -0.03, fade: 0.05,
+    shadowTint: [-0.012, 0.012, 0.016], highlightTint: [0, 0.006, 0.01], grain: 0,
+  },
+  moody: {
+    name: '暗调', exposure: -0.08, contrast: 0.14, saturation: -0.16, warmth: 0.02, fade: 0.05, shoulder: 0.4,
+    shadowTint: [-0.014, 0.008, 0.022], highlightTint: [0.03, 0.012, -0.018], grain: 0.015,
+  },
+  // 照着调色: only the automatic correction here; colorTransfer() then moves the colors
+  // toward the reference photo.
+  match: {
+    name: '参考色调', exposure: 0, contrast: 0, saturation: 0, warmth: 0, fade: 0,
+    shadowTint: [0, 0, 0], highlightTint: [0, 0, 0], grain: 0,
+  },
   // Scene looks, picked automatically by pickStyle().
   food: {
     name: '美食', exposure: 0.06, contrast: 0.1, saturation: 0.16, warmth: 0.05, fade: 0, wb: 0.5,
@@ -41,9 +56,9 @@ export const STYLES = {
     shadowTint: [0.01, -0.004, 0.012], highlightTint: [0.04, 0.016, -0.02], grain: 0,
   },
 };
-export const STYLE_KEYS = ['original', 'clear', 'cream', 'film'];
+export const STYLE_KEYS = ['original', 'japan', 'cream', 'film', 'moody', 'clear'];
 export const STYLE_NAMES = {
-  original: '原图', clear: '清透', cream: '奶油', film: '胶片',
+  original: '原图', clear: '清透', cream: '奶油', film: '胶片', japan: '日系', moody: '暗调', match: '参考色调',
   food: '美食', pet: '萌宠', city: '城市', night: '夜景', sunset: '日落',
 };
 const BY_SCENE = { person: 'cream', food: 'food', pet: 'pet', city: 'city', night: 'night', sunset: 'sunset' };
@@ -204,6 +219,67 @@ export function chromaDenoise(data, w, h, r = 2) {
     data[i * 4] = R;
     data[i * 4 + 1] = (Y[i] - 0.299 * R - 0.114 * B) / 0.587;
     data[i * 4 + 2] = B;
+  }
+  return data;
+}
+
+/* ---------- 照着调色: Reinhard color transfer in CIELAB ---------- */
+
+const LIN = new Float32Array(256);
+for (let i = 0; i < 256; i++) { const c = i / 255; LIN[i] = c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }
+const GAMMA_STEPS = 4096;
+const GAMMA = new Uint8ClampedArray(GAMMA_STEPS + 1);
+for (let i = 0; i <= GAMMA_STEPS; i++) { const c = i / GAMMA_STEPS; GAMMA[i] = Math.round(255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)); }
+const XN = 0.95047, ZN = 1.08883;
+const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+const finv = (t) => { const c = t * t * t; return c > 0.008856 ? c : (t - 16 / 116) / 7.787; };
+
+function toLab(R, G, B, out) {
+  const r = LIN[R], g = LIN[G], b = LIN[B];
+  const fx = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / XN);
+  const fy = f(0.2126 * r + 0.7152 * g + 0.0722 * b);
+  const fz = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / ZN);
+  out[0] = 116 * fy - 16; out[1] = 500 * (fx - fy); out[2] = 200 * (fy - fz);
+}
+
+function fromLab(L, a, bb, data, i) {
+  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - bb / 200;
+  const X = XN * finv(fx), Y = finv(fy), Z = ZN * finv(fz);
+  const enc = (v) => GAMMA[Math.round(Math.min(1, Math.max(0, v)) * GAMMA_STEPS)];
+  data[i] = enc(3.2406 * X - 1.5372 * Y - 0.4986 * Z);
+  data[i + 1] = enc(-0.9689 * X + 1.8758 * Y + 0.0415 * Z);
+  data[i + 2] = enc(0.0557 * X - 0.204 * Y + 1.057 * Z);
+}
+
+// Mean and spread of L, a, b over (every `step`-th pixel of) an RGBA image.
+export function colorStats(data, step = 4) {
+  const lab = [0, 0, 0];
+  const sum = [0, 0, 0], sq = [0, 0, 0];
+  let n = 0;
+  for (let i = 0; i < data.length; i += 4 * step) {
+    toLab(data[i], data[i + 1], data[i + 2], lab);
+    for (let c = 0; c < 3; c++) { sum[c] += lab[c]; sq[c] += lab[c] * lab[c]; }
+    n++;
+  }
+  const mean = sum.map((v) => v / n);
+  const std = sq.map((v, c) => Math.sqrt(Math.max(1e-6, v / n - mean[c] * mean[c])));
+  return { mean, std };
+}
+
+// Moves the photo's color statistics toward `target` (from colorStats of the reference).
+// Brightness moves only half way, so the reference can't wreck the exposure, and the spread
+// is scaled at most 0.6–1.6×.
+export function colorTransfer(data, target, strength = [0.5, 0.8, 0.8]) {
+  const src = colorStats(data, 4);
+  const ratio = target.std.map((t, c) => Math.min(1.6, Math.max(0.6, t / src.std[c])));
+  const lab = [0, 0, 0];
+  for (let i = 0; i < data.length; i += 4) {
+    toLab(data[i], data[i + 1], data[i + 2], lab);
+    for (let c = 0; c < 3; c++) {
+      const moved = (lab[c] - src.mean[c]) * ratio[c] + target.mean[c];
+      lab[c] += (moved - lab[c]) * strength[c];
+    }
+    fromLab(lab[0], lab[1], lab[2], data, i);
   }
   return data;
 }

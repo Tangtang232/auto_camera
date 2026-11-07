@@ -57,14 +57,25 @@
         <button id="refThumbBtn" class="ref-thumb" type="button" aria-label="按住查看参考图"><img id="refThumb" alt="参考图"></button>
         <button id="onionBtn" class="mini" type="button" aria-pressed="true">叠图</button>
         <label class="mini">换图<input id="refFile2" class="file-input" type="file" accept="image/*"></label>
-        <button id="refClear" class="mini" type="button">不用了</button>
+        <button id="refClear" class="mini" type="button">重选</button>
+      </div>
+
+      <div id="tplTips" class="tpl-tips" hidden>
+        <button id="tplTipsBtn" class="mini" type="button" aria-expanded="true">要点</button>
+        <div id="tplTipsBody" class="tpl-tips-body"></div>
       </div>
 
       <div id="refEmpty" class="ref-empty" hidden>
-        <h2>照着拍</h2>
-        <p>选一张你想拍成的照片。AI 会把里面的姿势和构图叠在取景画面上，带你一步步对齐。</p>
-        <label class="btn btn-primary">从相册选一张<input id="refFile" class="file-input" type="file" accept="image/*"></label>
-        <button id="refDemo" class="btn btn-ghost" type="button" hidden>用演示参考图</button>
+        <div class="tpl-head">
+          <h2>出片模板</h2>
+          <div id="tplTabs" class="tpl-tabs" role="tablist" aria-label="模板分类"></div>
+        </div>
+        <div id="tplGrid" class="tpl-grid"></div>
+        <p class="tpl-note">选一个模板，照着虚线摆姿势，拍完自动套上配套的色调。也可以从相册选一张喜欢的照片，照着它的姿势和颜色拍。</p>
+        <div class="tpl-actions">
+          <label class="btn btn-primary">从相册选一张<input id="refFile" class="file-input" type="file" accept="image/*"></label>
+          <button id="refDemo" class="btn btn-ghost" type="button" hidden>演示参考图</button>
+        </div>
       </div>
 
       <button id="motionChip" class="chip" type="button" hidden>轻点画面，开启水平仪</button>
@@ -150,9 +161,11 @@
     <div id="styleChips" class="chips" role="radiogroup" aria-label="风格">
       <button type="button" role="radio" data-style="original" aria-checked="false">原图</button>
       <button type="button" role="radio" data-style="auto" aria-checked="false">推荐<small id="recName"></small></button>
-      <button type="button" role="radio" data-style="clear" aria-checked="false">清透</button>
+      <button type="button" role="radio" data-style="japan" aria-checked="false">日系</button>
       <button type="button" role="radio" data-style="cream" aria-checked="false">奶油</button>
       <button type="button" role="radio" data-style="film" aria-checked="false">胶片</button>
+      <button type="button" role="radio" data-style="moody" aria-checked="false">暗调</button>
+      <button type="button" role="radio" data-style="clear" aria-checked="false">清透</button>
     </div>
     <label class="toggle"><input id="cropToggle" type="checkbox" checked><span>AI 裁剪构图</span></label>
   </div>
@@ -188,6 +201,7 @@
       <div><dt><span class="lg lg-ring"></span>快门外圈</dt><dd>越满越接近，变绿就可以按快门。</dd></div>
       <div><dt><span class="lg lg-ta">TA</span>「让TA…」</dt><dd>说给被拍的人。拍照的人照着说一声就行，「你左手边」指拍照人自己的左手边。</dd></div>
     </dl>
+    <p class="help-note">「照着拍」里有出片模板：选一个，照着半透明人形和虚线摆姿势，左上角的「要点」写着怎么摆、手机怎么拿，拍完自动套上配套的色调。也可以从相册选一张喜欢的照片，照着它的姿势拍，颜色也会往它靠。</p>
     <p class="help-note">左上角显示 AI 认出的场景：人像、美食、宠物、城市、夜景、日落、风景。不同场景给不同的引导，比如美食从斜上方拍，宠物蹲下来平视，楼房别仰着拍。认错了就点它手动选。</p>
     <p class="help-note">拍完会自动裁剪、校正曝光和白平衡，并套上适合场景的风格：城市照片会把仰拍歪掉的楼拉直一点，夜景会去掉彩色噪点，逆光人像会把脸提亮。在相册里点照片可以换风格。识别和处理都在手机上完成，画面和照片不会上传。</p>
   </div>

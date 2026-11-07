@@ -4,10 +4,12 @@ import { coverCrop, SHOT_NAME, clamp, personGeometry } from './geom.js';
 import { analyze, findHorizon, finish } from './guide.js';
 import { prepareReference, compareToReference, compareScene, alignImages, grayOf, boneLimb } from './match.js';
 import { drawOverlay, COLOR, scoreColor } from './draw.js';
-import { demoFrame, paintDemo, demoPose, DEMO_FINAL, DEMO_SCENES, demoSceneFrame, paintSceneDemo } from './demo.js';
+import { demoFrame, paintDemo, demoPose, DEMO_FINAL, DEMO_SCENES, demoSceneFrame, paintSceneDemo, demoTemplateFrame } from './demo.js';
 import { measureLight, faceBox } from './light.js';
 import { bestBox, boxesContaining } from './frame.js';
-import { STYLE_NAMES } from './develop.js';
+import { STYLE_NAMES, colorStats } from './develop.js';
+import { GROUPS, TEMPLATES, templateById, templatePose, cameraHint } from './templates.js';
+import { templateCard, silhouette } from './figure.js';
 import { SCENE_NAME, PICKABLE, freshScene, addClassification, stepScene, cameraElevation, flatDeviation } from './scene.js';
 import * as classifier from './classify.js';
 import * as pose from './pose.js';
@@ -21,6 +23,7 @@ const el = {
   hint: $('hint'), hintText: $('hintText'), hintWhy: $('hintWhy'),
   refPanel: $('refPanel'), refThumb: $('refThumb'), refThumbBtn: $('refThumbBtn'), onionBtn: $('onionBtn'),
   refFile: $('refFile'), refFile2: $('refFile2'), refClear: $('refClear'), refEmpty: $('refEmpty'), refDemo: $('refDemo'),
+  tplTabs: $('tplTabs'), tplGrid: $('tplGrid'), tplTips: $('tplTips'), tplTipsBtn: $('tplTipsBtn'), tplTipsBody: $('tplTipsBody'),
   motionChip: $('motionChip'),
   camError: $('camError'), camErrTitle: $('camErrTitle'), camErrText: $('camErrText'), camRetry: $('camRetry'), camDemo: $('camDemo'),
   flash: $('flash'),
@@ -78,6 +81,8 @@ const state = {
   override: null, // a scene picked by hand from the badge, this session only
   classAt: 0,
   demoScene: DEMO_SCENES.includes(params.get('scene')) ? params.get('scene') : null,
+  demoTemplate: templateById(params.get('template')),
+  tplGroup: 'others', // which tab of the template picker is showing
   horizon: null,
   horizonAt: 0,
   light: null,
@@ -477,7 +482,10 @@ function evaluate() {
   if (state.mode === 'match') {
     const d = state.ref && state.ref.data;
     if (!d) return { kind: 'empty', ...finish('none', null, []) };
-    if (d.prep) return { kind: 'match', ...compareToReference(d.prep, state.lm, state.aspect, selfie, tilt, state.light) };
+    if (d.prep) {
+      const cam = state.ref.template ? cameraHint(state.ref.template, sensorContext().elev, selfie) : null;
+      return { kind: 'match', ...compareToReference(d.prep, state.lm, state.aspect, selfie, tilt, state.light, cam ? [cam] : []) };
+    }
     if (state.align) return { kind: 'scene', ...compareScene(state.align, selfie, tilt, small.width, small.height) };
     return { kind: 'scene', ...finish('none', null, []) };
   }
@@ -498,7 +506,10 @@ function loop(now) {
   state.frame++;
   if (state.demo) {
     const t = (now - state.demoStart) / 1000;
-    if (state.demoScene) {
+    if (state.demoTemplate && state.mode === 'match') {
+      state.demoNow = demoTemplateFrame(state.demoTemplate, t, state.aspect);
+      paintDemo(dctx, el.demo.width, el.demo.height, state.demoNow);
+    } else if (state.demoScene) {
       state.demoNow = demoSceneFrame(state.demoScene, t);
       paintSceneDemo(dctx, el.demo.width, el.demo.height, state.demoNow);
     } else {
@@ -648,6 +659,7 @@ function present(result, now) {
     if (!state.ref) badge = '照着拍';
     else if (state.ref.busy) badge = '正在分析参考图…';
     else if (state.ref.data && !state.ref.data.prep) { badge = '照着拍 · 对齐构图'; level = tone; }
+    else if (state.ref.template) { badge = `模板 · ${state.ref.template.name}`; level = tone; }
     else { badge = '照着拍 · 对齐姿势'; level = tone; }
   } else if (!state.demo && state.poseState !== 'ready') badge = 'AI 加载中…';
   else {
@@ -732,9 +744,11 @@ async function processPhoto(photo, style, crop) {
   refreshPhoto(photo);
   try {
     const scene = photo.scene || (state.lastResult ? state.lastResult.scene : 'none');
+    const tpl = templateById(photo.template);
     const r = await aiCall('develop', {
       blob: photo.blob, style, crop, scene, keep: photo.keep || null,
       elev: photo.elev ?? null, face: photo.face || null, lowLight: !!photo.lowLight,
+      look: tpl ? tpl.look : null, refColor: photo.refColor || null,
     });
     const auto = style === 'auto';
     const rec = auto ? r.style : photo.look && photo.look.rec;
@@ -784,6 +798,10 @@ async function capture() {
     scene, elev: sensors.elev, face: scene === 'person' ? faceBox(state.lm, state.aspect) : null,
     lowLight: !!state.scene.lowLight,
   };
+  // 照着拍: a template brings its color look; a photo from the album lends its colors (照着调色).
+  const ref = state.mode === 'match' ? state.ref : null;
+  if (ref && ref.template) photo.template = ref.template.id;
+  if (ref && ref.data && ref.data.color) photo.refColor = ref.data.color;
   state.photos.push(photo);
   store.putPhoto(photo).catch(() => {});
   updateThumb(true);
@@ -1008,6 +1026,10 @@ function setMode(m) {
   state.mode = m;
   el.modeBtns.forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === m)));
   state.stab = freshStab();
+  if (m === 'match') {
+    state.tplGroup = isSelfie() ? 'selfie' : 'others';
+    renderTemplatePicker();
+  }
   renderRefUI();
 }
 
@@ -1018,12 +1040,85 @@ function renderRefUI() {
   el.refDemo.hidden = !state.demo;
   el.refPanel.hidden = !match || !ref;
   el.onion.hidden = !(match && ref && ref.onion);
+  el.tplTips.hidden = !(match && ref && ref.template);
   if (ref) {
-    if (el.refThumb.getAttribute('src') !== ref.url) el.refThumb.src = ref.url;
+    const thumb = ref.thumb || ref.url;
+    if (el.refThumb.getAttribute('src') !== thumb) el.refThumb.src = thumb;
     if (el.onion.getAttribute('src') !== ref.url) el.onion.src = ref.url;
     el.onionBtn.setAttribute('aria-pressed', String(ref.onion));
   }
   el.onion.classList.toggle('mirror', isMirror());
+}
+
+/* ---------- 出片模板 ---------- */
+
+const cards = new Map();
+const cardUrl = (t) => { if (!cards.has(t.id)) cards.set(t.id, templateCard(t)); return cards.get(t.id); };
+
+function renderTemplatePicker() {
+  el.tplTabs.replaceChildren(...GROUPS.map((g) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'tab');
+    b.dataset.group = g.key;
+    b.textContent = g.name;
+    b.setAttribute('aria-selected', String(g.key === state.tplGroup));
+    return b;
+  }));
+  el.tplGrid.replaceChildren(...TEMPLATES.filter((t) => t.group === state.tplGroup).map((t) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tpl-card';
+    b.dataset.tpl = t.id;
+    const img = document.createElement('img');
+    img.alt = '';
+    img.src = cardUrl(t);
+    const name = document.createElement('span');
+    name.className = 'tpl-name';
+    name.textContent = t.name;
+    const meta = document.createElement('span');
+    meta.className = 'tpl-meta';
+    meta.textContent = `${t.shot} · ${STYLE_NAMES[t.look]}`;
+    b.append(img, name, meta);
+    return b;
+  }));
+}
+
+function renderTips(t, open) {
+  const title = document.createElement('strong');
+  title.textContent = `${t.name} · ${t.shot}`;
+  const cam = document.createElement('p');
+  cam.textContent = t.camera.tip;
+  const list = document.createElement('ol');
+  for (const s of t.steps) {
+    const li = document.createElement('li');
+    li.textContent = s;
+    list.append(li);
+  }
+  el.tplTipsBody.replaceChildren(title, cam, list);
+  setTipsOpen(open);
+}
+
+function setTipsOpen(open) {
+  el.tplTipsBody.hidden = !open;
+  el.tplTipsBtn.setAttribute('aria-expanded', String(open));
+  el.tplTipsBtn.textContent = open ? '收起要点' : '要点';
+}
+
+async function useTemplate(t) {
+  if (!t) return;
+  const aspect = state.aspect;
+  const W = aspect < 1 ? 540 : 720;
+  const url = silhouette(templatePose(t, aspect), t.frame.s, W, Math.round(W / aspect));
+  const img = new Image();
+  img.src = url;
+  try { await img.decode(); } catch { /* the overlay still works */ }
+  setReference({ url, thumb: cardUrl(t), img, owned: false, preset: (a) => templatePose(t, a), template: t });
+  renderTips(t, true);
+  const selfieTpl = t.group === 'selfie';
+  if (!state.demo && selfieTpl !== isSelfie()) {
+    toast(selfieTpl ? '这是自拍模板，点右下角切到前摄像头' : '这个模板是给别人拍的，点右下角切回后摄像头', 3200);
+  }
 }
 
 async function setReferenceFromFile(file) {
@@ -1067,10 +1162,15 @@ async function prepareRefData() {
   const crop = coverCrop(iw, ih, aspect);
   const W = aspect < 1 ? 540 : 720;
   const H = Math.round(W / aspect);
+  // A template's overlay is drawn for the frame shape, so redraw it if the phone turned.
+  if (ref.template) ref.url = silhouette(templatePose(ref.template, aspect), ref.template.frame.s, W, H);
   const c = document.createElement('canvas');
   c.width = W;
   c.height = H;
-  c.getContext('2d').drawImage(ref.img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, W, H);
+  const cctx = c.getContext('2d', { willReadFrequently: true });
+  cctx.drawImage(ref.img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, W, H);
+  // 照着调色: remember the colors of a photo picked from the album.
+  const color = ref.preset ? null : colorStats(cctx.getImageData(0, 0, W, H).data, 8);
   const s = document.createElement('canvas');
   s.width = small.width;
   s.height = small.height;
@@ -1087,11 +1187,13 @@ async function prepareRefData() {
   }
   if (state.ref !== ref || state.aspect !== aspect) return;
   const prep = lm ? prepareReference(lm, aspect) : null;
-  ref.data = { lm: prep ? lm : null, prep, gray, w: s.width, h: s.height };
+  ref.data = { lm: prep ? lm : null, prep, gray, w: s.width, h: s.height, color };
   ref.busy = false;
   state.stab = freshStab();
   renderRefUI();
-  toast(prep ? '认出参考图里的人了，对齐虚线就行' : '参考图里没认出人，按半透明叠图对齐构图', 3000);
+  if (ref.template) return; // the tips card already says what to do
+  const tail = color ? '。拍完会照着它调色' : '';
+  toast((prep ? '认出参考图里的人了，对齐虚线就行' : '参考图里没认出人，按半透明叠图对齐构图') + tail, 3200);
 }
 
 function useDemoReference() {
@@ -1224,6 +1326,17 @@ function bindUI() {
   el.refFile.addEventListener('change', onRefFile);
   el.refFile2.addEventListener('change', onRefFile);
   el.refDemo.addEventListener('click', useDemoReference);
+  el.tplTabs.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-group]');
+    if (!b) return;
+    state.tplGroup = b.dataset.group;
+    renderTemplatePicker();
+  });
+  el.tplGrid.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tpl]');
+    if (b) useTemplate(templateById(b.dataset.tpl));
+  });
+  el.tplTipsBtn.addEventListener('click', () => setTipsOpen(el.tplTipsBody.hidden));
   el.refClear.addEventListener('click', clearReference);
   el.onionBtn.addEventListener('click', () => {
     if (!state.ref) return;
@@ -1279,7 +1392,8 @@ function boot() {
   if (params.get('mode') === 'match') setMode('match');
   if (state.demo) {
     startDemo();
-    if (state.mode === 'match') useDemoReference(); // ?demo&mode=match previews 照着拍 end to end
+    // ?demo&mode=match previews 照着拍 end to end; add &template=<id> for a 出片模板.
+    if (state.mode === 'match') { if (state.demoTemplate) useTemplate(state.demoTemplate); else useDemoReference(); }
   } else {
     initMotion();
     startCamera();

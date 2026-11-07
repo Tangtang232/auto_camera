@@ -60,8 +60,9 @@ export function prepareReference(lm, aspect) {
   return { lm, geo: personGeometry(lm, aspect), limbs };
 }
 
-export function compareToReference(ref, lm, aspect, selfie, tilt, light = null) {
-  const hints = [];
+// extra: more hints to weigh in, e.g. the template's camera angle (templates.js cameraHint).
+export function compareToReference(ref, lm, aspect, selfie, tilt, light = null, extra = []) {
+  const hints = [...extra];
   if (!lm) {
     hints.push({ id: 'm-none', level: 'bad', order: 0, text: selfie ? '人站进画面里' : '让TA站进画面', why: '还没找到人' });
     levelRule(tilt, 'person', hints);

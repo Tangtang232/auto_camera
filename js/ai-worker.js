@@ -4,7 +4,7 @@
 //            + auto-correct + style a captured photo, return a JPEG
 
 import { bestBox, boxesContaining } from './frame.js';
-import { measureTone, pickStyle, planDevelop, develop, chromaDenoise, fillLight } from './develop.js';
+import { measureTone, pickStyle, planDevelop, develop, chromaDenoise, fillLight, colorTransfer } from './develop.js';
 import { correctVertical, shouldCorrect } from './perspective.js';
 
 const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
@@ -60,8 +60,10 @@ function intoCrop(b, crop) {
 // keep: optional {x0, y0, x1, y1} the crop must contain (the person in the shot).
 // scene: the scene at capture; elev: the camera's elevation then (degrees, null if unknown);
 // face: the face box for fill light; lowLight: shot in dim light.
+// look: the template's color look; refColor: color statistics of a 照着拍 reference photo
+// (照着调色). With style 'auto' these win over the scene's look.
 // style 'original' only crops: no straightening, denoising or color changes.
-async function developPhoto({ blob, style, crop, scene, keep, elev = null, face = null, lowLight = false }) {
+async function developPhoto({ blob, style, crop, scene, keep, elev = null, face = null, lowLight = false, look = null, refColor = null }) {
   const bmp = await createImageBitmap(blob);
   const original = style === 'original';
   let base = bmp;
@@ -114,9 +116,10 @@ async function developPhoto({ blob, style, crop, scene, keep, elev = null, face 
     }
   }
   const tone = measureTone(img.data, 16);
-  const key = style === 'auto' ? pickStyle(scene, tone) : style;
+  const key = style !== 'auto' ? style : refColor ? 'match' : look || pickStyle(scene, tone);
   const plan = planDevelop(tone, key);
   if (plan) { develop(img.data, plan); changed = true; }
+  if (key === 'match' && refColor) { colorTransfer(img.data, refColor); changed = true; }
   if (changed) ctx.putImageData(img, 0, 0);
   const out = changed || box || straight ? await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 }) : null;
   return { blob: out, style: key, crop: box, straight, w: sw, h: sh };

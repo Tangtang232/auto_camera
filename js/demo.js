@@ -4,6 +4,9 @@
 // then the person leaves and a landscape with a centered horizon remains.
 
 import { clamp } from './geom.js';
+import { paintFigure } from './figure.js';
+import { rig, placePose, blendPose } from './rig.js';
+import { templatePose } from './templates.js';
 
 // A standing figure in "person units": height 1, origin between the feet,
 // x toward the image right, y up (negative). Index order follows MediaPipe Pose.
@@ -184,33 +187,19 @@ export function paintSceneDemo(ctx, w, h, f) {
   }
 }
 
-function paintFigure(ctx, w, h, lm, s) {
-  const X = (p) => p.x * w, Y = (p) => p.y * h;
-  const lw = s * h * 0.07;
-  const path = (ids) => {
-    ctx.beginPath();
-    ids.forEach((i, k) => (k ? ctx.lineTo(X(lm[i]), Y(lm[i])) : ctx.moveTo(X(lm[i]), Y(lm[i]))));
-  };
-  ctx.save();
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.strokeStyle = '#2c3442';
-  ctx.lineWidth = lw;
-  path([23, 25, 27]); ctx.stroke();
-  path([24, 26, 28]); ctx.stroke();
-  ctx.fillStyle = '#c4553d';
-  ctx.strokeStyle = '#c4553d';
-  path([11, 12, 24, 23]); ctx.closePath(); ctx.fill();
-  ctx.lineWidth = lw * 0.9; ctx.stroke();
-  ctx.lineWidth = lw * 0.75;
-  path([11, 13, 15]); ctx.stroke();
-  path([12, 14, 16]); ctx.stroke();
-  ctx.fillStyle = '#e2b48f';
-  for (const i of [15, 16]) { ctx.beginPath(); ctx.arc(X(lm[i]), Y(lm[i]), lw * 0.38, 0, Math.PI * 2); ctx.fill(); }
-  const r = s * h * 0.062;
-  const hx = X(lm[0]), hy = Y(lm[0]) - r * 0.25;
-  ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#2a211c';
-  ctx.beginPath(); ctx.arc(hx, hy - r * 0.3, r * 0.98, Math.PI, 0); ctx.fill();
-  ctx.restore();
+/* ---------- template demo: ?demo&mode=match&template=<id> ---------- */
+// The figure starts standing a little to the side and eases into the template's pose,
+// while the phone angle starts outside the template's range and settles in it.
+
+const TEMPLATE_LOOP = 14;
+
+export function demoTemplateFrame(t, time, aspect) {
+  const tt = ((time % TEMPLATE_LOOP) + TEMPLATE_LOOP) % TEMPLATE_LOOP;
+  const target = templatePose(t, aspect);
+  const start = placePose(rig(), { cx: clamp(t.frame.cx + 0.14, 0.2, 0.8), s: Math.min(t.frame.s, 0.75), fb: 0.92 }, aspect);
+  const lm = blendPose(start, target, seg(tt, 2, 8));
+  const [lo, hi] = t.camera.elev;
+  const mid = (lo + hi) / 2;
+  const elev = mid + (lo - 10 - mid) * (1 - seg(tt, 8.5, 10));
+  return { t: tt, lm, s: t.frame.s, tilt: 0, horizonY: 0.56, sensors: { elev } };
 }
